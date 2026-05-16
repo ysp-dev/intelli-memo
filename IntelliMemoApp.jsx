@@ -83,11 +83,20 @@ const AI_CORRECTION_MODES = [
     prompt: (text) =>
       `You are a Korean semantic editor. Analyze the meaning, intent, and logical flow of the text. Fix ambiguous expressions, logical gaps, unclear references, and contradictions. Preserve the original ideas but clarify meaning so the text communicates the intended message precisely. Return ONLY the improved Korean text, no explanations.\n\n의미와 맥락을 분석해서 모호한 표현, 논리적 빈틈, 불명확한 지시어를 교정해줘. 원래 의도는 유지하되 전달력을 높여줘.\n\n${text}`,
   },
+  {
+    key:   "translate",
+    label: "번역",
+    group: "translate",
+    modal: true,
+    prompt: (text) =>
+      `Detect the language of the following text and translate it into natural, fluent Korean. Return ONLY the translated Korean text. No explanations, no source language label, no alternatives.\n\n다음 텍스트의 언어를 자동으로 감지하고 자연스러운 한국어로 번역해줘. 번역문만 반환해.\n\n${text}`,
+  },
 ];
 
 const AI_CORRECTION_GROUPS = [
-  { key: "typo",     label: "오타·띄어쓰기" },
-  { key: "sentence", label: "문장 교정" },
+  { key: "typo",      label: "오타·띄어쓰기" },
+  { key: "sentence",  label: "문장 교정" },
+  { key: "translate", label: "번역" },
 ];
 
 const DEFAULT_AI_CORRECTION_MODE = "typo";
@@ -422,7 +431,9 @@ const CSS = `
     min-height: 0; min-width: 0;
     transition: background 130ms ease, color 130ms ease;
   }
-  .f-chip.on { background: var(--accent-bg); color: var(--accent); border-color: rgba(91,33,182,0.15); }
+  .f-chip.on[data-filter="all"]    { background: rgba(100,116,139,0.12); color: #64748b; border-color: rgba(100,116,139,0.4); }
+  .f-chip.on[data-filter="active"] { background: rgba(14,165,233,0.12);  color: #0ea5e9; border-color: rgba(14,165,233,0.4); }
+  .f-chip.on[data-filter="done"]   { background: rgba(16,185,129,0.12);  color: #10b981; border-color: rgba(16,185,129,0.4); }
 
   /* ── Tag filter strip (memo view) ── */
   .tag-filter-strip {
@@ -865,10 +876,18 @@ const CSS = `
     white-space: nowrap; min-height: 0; min-width: 0;
     transition: background 110ms ease, color 110ms ease, border-color 110ms ease;
   }
-  .ai-mode-chip.on {
-    background: var(--accent-bg); color: var(--accent);
-    border-color: rgba(91,33,182,0.22);
-  }
+  .ai-mode-chip.typo-chip     { border-color: rgba(249,115,22,0.35); }
+  .ai-mode-chip.typo-chip.on  { background: rgba(249,115,22,0.12); color: #f97316; border-color: rgba(249,115,22,0.5); }
+  .ai-mode-chip.sentence-chip     { border-color: rgba(59,130,246,0.35); }
+  .ai-mode-chip.sentence-chip.on  { background: rgba(59,130,246,0.12); color: #3b82f6; border-color: rgba(59,130,246,0.5); }
+  .ai-mode-chip.translate-chip     { border-color: rgba(16,185,129,0.35); }
+  .ai-mode-chip.translate-chip.on  { background: rgba(16,185,129,0.12); color: #10b981; border-color: rgba(16,185,129,0.5); }
+  .ai-mode-chip.grammar-chip     { border-color: rgba(14,165,233,0.35); }
+  .ai-mode-chip.grammar-chip.on  { background: rgba(14,165,233,0.12); color: #0ea5e9; border-color: rgba(14,165,233,0.5); }
+  .ai-mode-chip.style-chip     { border-color: rgba(139,92,246,0.35); }
+  .ai-mode-chip.style-chip.on  { background: rgba(139,92,246,0.12); color: #8b5cf6; border-color: rgba(139,92,246,0.5); }
+  .ai-mode-chip.semantic-chip     { border-color: rgba(245,158,11,0.35); }
+  .ai-mode-chip.semantic-chip.on  { background: rgba(245,158,11,0.12); color: #f59e0b; border-color: rgba(245,158,11,0.5); }
 
   /* AI row */
   .ai-row {
@@ -1349,6 +1368,7 @@ function Header({ activeView, setActiveView, actionFilter, setActionFilter, comp
                   key={f.key}
                   type="button"
                   className={`f-chip${actionFilter === f.key ? " on" : ""}`}
+                  data-filter={f.key}
                   onClick={() => setActionFilter(f.key)}
                 >
                   {f.label}
@@ -1965,15 +1985,18 @@ function Composer({
         <>
           <div className="ai-mode-row">
             {AI_CORRECTION_GROUPS.map((g) => {
-              const active = g.key === "typo" ? aiMode === "typo" : aiMode !== "typo";
+              const active = g.key === "typo" ? aiMode === "typo"
+                           : g.key === "translate" ? aiMode === "translate"
+                           : !["typo", "translate"].includes(aiMode);
               return (
                 <button
                   key={g.key}
                   type="button"
-                  className={`ai-mode-chip${active ? " on" : ""}`}
+                  className={`ai-mode-chip ${g.key}-chip${active ? " on" : ""}`}
                   onClick={() => {
                     if (g.key === "typo") setAiMode("typo");
-                    else if (aiMode === "typo") setAiMode("grammar");
+                    else if (g.key === "translate") setAiMode("translate");
+                    else if (["typo", "translate"].includes(aiMode)) setAiMode("grammar");
                   }}
                 >
                   {g.label}
@@ -1981,13 +2004,13 @@ function Composer({
               );
             })}
           </div>
-          {aiMode !== "typo" && (
+          {!["typo", "translate"].includes(aiMode) && (
             <div className="ai-mode-row ai-submode-row">
               {AI_CORRECTION_MODES.filter((m) => m.group === "sentence").map((m) => (
                 <button
                   key={m.key}
                   type="button"
-                  className={`ai-mode-chip${aiMode === m.key ? " on" : ""}`}
+                  className={`ai-mode-chip ${m.key}-chip${aiMode === m.key ? " on" : ""}`}
                   onClick={() => setAiMode(m.key)}
                 >
                   {m.label}
@@ -2116,7 +2139,7 @@ function ErrorModal({ error, onClose }) {
 }
 
 // 문장 교정 결과 모달
-function CorrectionModal({ original, corrected, onApply, onCancel }) {
+function CorrectionModal({ original, corrected, onApply, onCancel, title = "문장 교정 제안", correctedLabel = "교정 제안" }) {
   return (
     <motion.div
       className="correction-overlay"
@@ -2135,7 +2158,7 @@ function CorrectionModal({ original, corrected, onApply, onCancel }) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="correction-modal-hdr">
-          <h2>문장 교정 제안 <span>AI가 제안한 교정입니다</span></h2>
+          <h2>{title} <span>AI가 제안한 내용입니다</span></h2>
           <button type="button" className="correction-close-btn" onClick={onCancel}>
             <X size={14} />
           </button>
@@ -2147,7 +2170,7 @@ function CorrectionModal({ original, corrected, onApply, onCancel }) {
           </div>
           <div className="correction-arrow">↓</div>
           <div className="correction-box suggested">
-            <p className="correction-label">교정 제안</p>
+            <p className="correction-label">{correctedLabel}</p>
             <p className="correction-text">{corrected}</p>
           </div>
         </div>
@@ -2205,11 +2228,11 @@ function CropModal({ dataUrl, mimeType, onCrop, onCancel }) {
     ctx.stroke();
 
     // 꼭지점 L자 핸들
-    const ARM  = Math.min(w, h, 80) * 0.22;
-    const TICK = Math.max(3, ARM * 0.18);
+    const ARM  = Math.min(w, h, 120) * 0.32;
+    const TICK = Math.max(5, ARM * 0.22);
     ctx.fillStyle = "#fff";
     ctx.shadowColor = "rgba(0,0,0,0.55)";
-    ctx.shadowBlur  = 6;
+    ctx.shadowBlur  = 8;
     [
       [x1, y1,  1,  1],
       [x2, y1, -1,  1],
@@ -2589,8 +2612,8 @@ export default function IntelliMemoApp() {
       try {
         const corrected = await correctKorean({ apiKey: aiSettings.apiKey, model, text, mode });
         if (modeConfig.modal && type === "memos") {
-          setPendingCorrection({ original: text, corrected });
-          setAiStatus({ state: "success", message: "교정 제안 준비됨 ✓" });
+          setPendingCorrection({ original: text, corrected, mode: modeConfig.key });
+          setAiStatus({ state: "success", message: `${modeConfig.label} 제안 준비됨 ✓` });
         } else {
           if (type === "memos") setMemoText(corrected);
           else setActionText(corrected);
@@ -2765,13 +2788,15 @@ export default function IntelliMemoApp() {
         )}
       </AnimatePresence>
 
-      {/* 문장 교정 모달 */}
+      {/* 교정/번역 모달 */}
       <AnimatePresence>
         {pendingCorrection && (
           <CorrectionModal
             key="correction-modal"
             original={pendingCorrection.original}
             corrected={pendingCorrection.corrected}
+            title={pendingCorrection.mode === "translate" ? "번역 제안" : "문장 교정 제안"}
+            correctedLabel={pendingCorrection.mode === "translate" ? "번역" : "교정 제안"}
             onApply={() => {
               setMemoText(pendingCorrection.corrected);
               setPendingCorrection(null);
