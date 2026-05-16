@@ -1436,7 +1436,7 @@ function Header({ activeView, setActiveView, actionFilter, setActionFilter, comp
                   placeholder="검색..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === "Escape" && onToggleSearch()}
+                  onKeyDown={(e) => e.key === "Escape" && !e.nativeEvent.isComposing && onToggleSearch()}
                 />
                 {searchQuery && (
                   <button type="button" className="search-clear-btn" onClick={() => setSearchQuery("")}>
@@ -2729,7 +2729,7 @@ export default function IntelliMemoApp() {
           layoutMode={layoutMode}
           onToggleLayout={() => setLayoutMode((m) => (m === "landscape" ? "portrait" : "landscape"))}
           searchOpen={searchOpen}
-          onToggleSearch={() => { setSearchOpen((o) => { if (o) setSearchQuery(""); return !o; }); }}
+          onToggleSearch={() => { if (searchOpen) { setSearchQuery(""); } setSearchOpen((o) => !o); }}
           searchQuery={searchQuery}
           setSearchQuery={setSearchQuery}
         />
@@ -2780,7 +2780,9 @@ export default function IntelliMemoApp() {
                     )}
 
                     {filteredMemos.length === 0 ? (
-                      <EmptyState type="memos" />
+                      memos.length > 0 && searchQuery.trim()
+                        ? <p style={{ textAlign: "center", color: "var(--t3)", fontSize: 13, padding: "32px 0" }}>검색 결과가 없습니다</p>
+                        : <EmptyState type="memos" />
                     ) : (
                       memoGroups.map(([label, group]) => (
                         <div key={label} className="date-group">
@@ -2827,7 +2829,9 @@ export default function IntelliMemoApp() {
                     )}
 
                     {filteredActions.length === 0 ? (
-                      <EmptyState type="actions" />
+                      actions.length > 0 && searchQuery.trim()
+                        ? <p style={{ textAlign: "center", color: "var(--t3)", fontSize: 13, padding: "32px 0" }}>검색 결과가 없습니다</p>
+                        : <EmptyState type="actions" />
                     ) : (
                       <div className="action-list">
                         <AnimatePresence initial={false}>
