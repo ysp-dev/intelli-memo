@@ -1194,23 +1194,25 @@ const CSS = `
     touch-action: none;
     user-select: none; -webkit-user-select: none;
   }
-  .crop-hint {
-    position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
-    background: rgba(0,0,0,0.65); color: rgba(255,255,255,0.85);
-    font-size: 11px; font-weight: 600; padding: 4px 12px; border-radius: 999px;
-    white-space: nowrap; pointer-events: none;
-  }
   .crop-modal-footer {
     display: flex; gap: 8px; padding: 12px 16px;
     border-top: 1px solid rgba(255,255,255,0.1); flex-shrink: 0;
   }
   .crop-cancel-btn {
-    height: 40px; padding: 0 20px; border-radius: 999px;
-    background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.8);
+    height: 40px; padding: 0 16px; border-radius: 999px;
+    background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.75);
     font-size: 13px; font-weight: 600; min-height: 0;
     transition: background 110ms ease;
   }
-  .crop-cancel-btn:hover { background: rgba(255,255,255,0.16); }
+  .crop-cancel-btn:hover { background: rgba(255,255,255,0.14); }
+  .crop-reset-btn {
+    height: 40px; padding: 0 16px; border-radius: 999px;
+    background: transparent; color: rgba(255,255,255,0.55);
+    border: 1px solid rgba(255,255,255,0.18);
+    font-size: 13px; font-weight: 600; min-height: 0;
+    transition: background 110ms ease, color 110ms ease;
+  }
+  .crop-reset-btn:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.8); }
   .crop-apply-btn {
     flex: 1; height: 40px; border-radius: 999px;
     background: var(--accent); color: #fff;
@@ -1646,6 +1648,7 @@ function Composer({
   aiSettings, setAiSettings,
   aiStatus,
   onCorrectDraft,
+  onOcrError,
 }) {
   const memoRef   = useRef(null);
   const actionRef = useRef(null);
@@ -1674,24 +1677,34 @@ function Composer({
   const handleCropConfirm = async (base64, mimeType) => {
     setCropData(null);
     setOcrState("scanning");
-    try {
-      const extracted = await extractTextFromImage({
-        apiKey: aiSettings.apiKey,
-        model: aiSettings.model || "gemini-2.5-flash",
-        base64,
-        mimeType,
-      });
-      if (!extracted.trim()) {
-        setOcrState("error");
-        setTimeout(() => setOcrState("idle"), 2000);
+
+    const fallbacks = getModelFallbacks(normalizeModel(aiSettings.model));
+    let lastError = null;
+    let lastModel = fallbacks.at(-1) ?? DEFAULT_AI_MODEL;
+
+    for (let i = 0; i < fallbacks.length; i++) {
+      const model = fallbacks[i];
+      lastModel = model;
+      setAiSettings((s) => ({ ...s, model }));
+      try {
+        const extracted = await extractTextFromImage({ apiKey: aiSettings.apiKey, model, base64, mimeType });
+        if (!extracted.trim()) {
+          setOcrState("error");
+          setTimeout(() => setOcrState("idle"), 2000);
+          return;
+        }
+        setMemoText((prev) => prev ? `${prev}\n${extracted}` : extracted);
+        setOcrState("idle");
         return;
+      } catch (err) {
+        lastError = err;
       }
-      setMemoText((prev) => prev ? `${prev}\n${extracted}` : extracted);
-      setOcrState("idle");
-    } catch {
-      setOcrState("error");
-      setTimeout(() => setOcrState("idle"), 2500);
     }
+
+    const message = lastError instanceof Error ? lastError.message : "OCR 실패";
+    setOcrState("error");
+    setTimeout(() => setOcrState("idle"), 2000);
+    onOcrError({ model: lastModel, message });
   };
   const draftText  = activeView === "memos" ? memoText : actionText;
   const hasText    = draftText.trim().length > 0;
@@ -2084,39 +2097,81 @@ function CorrectionModal({ original, corrected, onApply, onCancel }) {
 // ─── CropModal ───────────────────────────────────────────────────────────────
 
 function CropModal({ dataUrl, mimeType, onCrop, onCancel }) {
-  const canvasRef    = useRef(null);
-  const imgRef       = useRef(null);
-  const selRef       = useRef(null);   // { x, y, w, h } in canvas px
-  const dragStartRef = useRef(null);
-  const draggingRef  = useRef(false);
+  const canvasRef = useRef(null);
+  const imgRef    = useRef(null);
+  const cropRef   = useRef(null); // { x1, y1, x2, y2 } in canvas px
+  const dragRef   = useRef(null); // { type, startX, startY, startCrop }
 
+  // ── 캔버스 그리기 ──
   const redraw = useCallback(() => {
     const canvas = canvasRef.current;
     const img    = imgRef.current;
     if (!canvas || !img) return;
     const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-    const s = selRef.current;
-    if (s && s.w > 2 && s.h > 2) {
-      ctx.fillStyle = "rgba(0,0,0,0.52)";
-      ctx.fillRect(0, 0, canvas.width, s.y);
-      ctx.fillRect(0, s.y + s.h, canvas.width, canvas.height - s.y - s.h);
-      ctx.fillRect(0, s.y, s.x, s.h);
-      ctx.fillRect(s.x + s.w, s.y, canvas.width - s.x - s.w, s.h);
+    const c = cropRef.current;
+    if (!c) return;
+    const { x1, y1, x2, y2 } = c;
+    const w = x2 - x1, h = y2 - y1;
 
-      ctx.strokeStyle = "#fff";
-      ctx.lineWidth = 2;
-      ctx.strokeRect(s.x + 1, s.y + 1, s.w - 2, s.h - 2);
+    // 외부 어둡게
+    ctx.fillStyle = "rgba(0,0,0,0.52)";
+    ctx.fillRect(0, 0, canvas.width, y1);
+    ctx.fillRect(0, y2, canvas.width, canvas.height - y2);
+    ctx.fillRect(0, y1, x1, h);
+    ctx.fillRect(x2, y1, canvas.width - x2, h);
 
-      const cs = 14;
-      ctx.fillStyle = "#fff";
-      [[s.x, s.y], [s.x + s.w - cs, s.y],
-       [s.x, s.y + s.h - cs], [s.x + s.w - cs, s.y + s.h - cs]].forEach(([cx, cy]) => {
-        ctx.fillRect(cx, cy, cs, cs);
-      });
-    }
+    // 테두리
+    ctx.strokeStyle = "rgba(255,255,255,0.9)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x1 + 1, y1 + 1, w - 2, h - 2);
+
+    // 3분할 보조선
+    ctx.strokeStyle = "rgba(255,255,255,0.22)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x1 + w / 3, y1); ctx.lineTo(x1 + w / 3, y2);
+    ctx.moveTo(x1 + 2 * w / 3, y1); ctx.lineTo(x1 + 2 * w / 3, y2);
+    ctx.moveTo(x1, y1 + h / 3); ctx.lineTo(x2, y1 + h / 3);
+    ctx.moveTo(x1, y1 + 2 * h / 3); ctx.lineTo(x2, y1 + 2 * h / 3);
+    ctx.stroke();
+
+    // 꼭지점 L자 핸들
+    const ARM  = Math.min(w, h, 80) * 0.22;
+    const TICK = Math.max(3, ARM * 0.18);
+    ctx.fillStyle = "#fff";
+    ctx.shadowColor = "rgba(0,0,0,0.55)";
+    ctx.shadowBlur  = 6;
+    [
+      [x1, y1,  1,  1],
+      [x2, y1, -1,  1],
+      [x1, y2,  1, -1],
+      [x2, y2, -1, -1],
+    ].forEach(([cx, cy, sx, sy]) => {
+      ctx.fillRect(cx,           cy,           sx * ARM,  sy * TICK);
+      ctx.fillRect(cx,           cy,           sx * TICK, sy * ARM);
+    });
+
+    // 꼭지점 원형 닷 (터치 타깃 시각화)
+    ctx.shadowBlur = 0;
+    ctx.fillStyle  = "#fff";
+    [[x1, y1], [x2, y1], [x1, y2], [x2, y2]].forEach(([cx, cy]) => {
+      ctx.beginPath();
+      ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+      ctx.fill();
+    });
   }, []);
+
+  // ── 기본 크롭 박스 (이미지 95% 영역) ──
+  const initCrop = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const pad = Math.min(canvas.width, canvas.height) * 0.04;
+    cropRef.current = { x1: pad, y1: pad, x2: canvas.width - pad, y2: canvas.height - pad };
+    redraw();
+  }, [redraw]);
 
   useEffect(() => {
     const img = new Image();
@@ -2124,76 +2179,111 @@ function CropModal({ dataUrl, mimeType, onCrop, onCancel }) {
       imgRef.current = img;
       const canvas = canvasRef.current;
       if (!canvas) return;
-      const maxW = 1400;
-      const scale = Math.min(1, maxW / img.naturalWidth);
+      const scale = Math.min(1, 1400 / img.naturalWidth);
       canvas.width  = Math.round(img.naturalWidth  * scale);
       canvas.height = Math.round(img.naturalHeight * scale);
-      redraw();
+      initCrop();
     };
     img.src = dataUrl;
-  }, [dataUrl, redraw]);
+  }, [dataUrl, initCrop]);
 
-  const toCanvasCoords = (e) => {
+  // ── 좌표 변환 ──
+  const toCanvas = (e) => {
     const canvas = canvasRef.current;
     const rect   = canvas.getBoundingClientRect();
-    const cx = e.touches ? e.touches[0].clientX : e.clientX;
-    const cy = e.touches ? e.touches[0].clientY : e.clientY;
+    const src    = e.touches ? e.touches[0] : e;
     return {
-      x: Math.max(0, Math.min(canvas.width,  (cx - rect.left) * (canvas.width  / rect.width))),
-      y: Math.max(0, Math.min(canvas.height, (cy - rect.top)  * (canvas.height / rect.height))),
+      x: (src.clientX - rect.left) * (canvas.width  / rect.width),
+      y: (src.clientY - rect.top)  * (canvas.height / rect.height),
     };
+  };
+
+  // ── 히트 테스트: 꼭지점 우선, 그 다음 내부 이동 ──
+  const hitTest = (p) => {
+    const c = cropRef.current;
+    if (!c) return null;
+    const canvas = canvasRef.current;
+    const rect   = canvas.getBoundingClientRect();
+    // 28 CSS px 터치 타깃 → 캔버스 좌표계 변환
+    const R = 28 * (canvas.width / rect.width);
+    const { x1, y1, x2, y2 } = c;
+    for (const [name, cx, cy] of [
+      ["tl", x1, y1], ["tr", x2, y1], ["bl", x1, y2], ["br", x2, y2],
+    ]) {
+      if ((p.x - cx) ** 2 + (p.y - cy) ** 2 <= R ** 2) return name;
+    }
+    if (p.x > x1 && p.x < x2 && p.y > y1 && p.y < y2) return "move";
+    return null;
   };
 
   const onDown = (e) => {
     e.preventDefault();
-    const p = toCanvasCoords(e);
-    draggingRef.current  = true;
-    dragStartRef.current = p;
-    selRef.current = { x: p.x, y: p.y, w: 0, h: 0 };
-    redraw();
+    const p   = toCanvas(e);
+    const hit = hitTest(p);
+    if (hit) {
+      dragRef.current = { type: hit, startX: p.x, startY: p.y, startCrop: { ...cropRef.current } };
+    }
   };
 
   const onMove = (e) => {
-    if (!draggingRef.current) return;
+    if (!dragRef.current) return;
     e.preventDefault();
-    const p = toCanvasCoords(e);
-    const s = dragStartRef.current;
-    selRef.current = {
-      x: Math.min(p.x, s.x), y: Math.min(p.y, s.y),
-      w: Math.abs(p.x - s.x), h: Math.abs(p.y - s.y),
-    };
+    const p  = toCanvas(e);
+    const { type, startX, startY, startCrop: sc } = dragRef.current;
+    const canvas = canvasRef.current;
+    const MIN    = 30;
+    const dx = p.x - startX, dy = p.y - startY;
+    let { x1, y1, x2, y2 } = sc;
+
+    if (type === "move") {
+      const w = x2 - x1, h = y2 - y1;
+      x1 = Math.max(0, Math.min(canvas.width  - w, sc.x1 + dx));
+      y1 = Math.max(0, Math.min(canvas.height - h, sc.y1 + dy));
+      x2 = x1 + w; y2 = y1 + h;
+    } else {
+      if (type === "tl" || type === "bl") x1 = Math.max(0,             Math.min(sc.x2 - MIN, sc.x1 + dx));
+      if (type === "tr" || type === "br") x2 = Math.min(canvas.width,  Math.max(sc.x1 + MIN, sc.x2 + dx));
+      if (type === "tl" || type === "tr") y1 = Math.max(0,             Math.min(sc.y2 - MIN, sc.y1 + dy));
+      if (type === "bl" || type === "br") y2 = Math.min(canvas.height, Math.max(sc.y1 + MIN, sc.y2 + dy));
+    }
+
+    cropRef.current = { x1, y1, x2, y2 };
     redraw();
   };
 
   const onUp = (e) => {
     e.preventDefault();
-    draggingRef.current = false;
+    dragRef.current = null;
   };
 
+  // ── 크롭 적용 → OCR ──
   const handleApply = () => {
-    const s   = selRef.current;
+    const c   = cropRef.current;
     const img = imgRef.current;
     const canvas = canvasRef.current;
     if (!img) return;
 
-    const cropCanvas = document.createElement("canvas");
-    const ctx        = cropCanvas.getContext("2d");
+    const out = document.createElement("canvas");
+    const ctx = out.getContext("2d");
 
-    if (!s || s.w < 10 || s.h < 10) {
-      cropCanvas.width  = img.naturalWidth;
-      cropCanvas.height = img.naturalHeight;
-      ctx.drawImage(img, 0, 0);
+    if (!c) {
+      const scale = Math.min(1, 1400 / img.naturalWidth);
+      out.width  = Math.round(img.naturalWidth  * scale);
+      out.height = Math.round(img.naturalHeight * scale);
+      ctx.drawImage(img, 0, 0, out.width, out.height);
     } else {
       const sx = img.naturalWidth  / canvas.width;
       const sy = img.naturalHeight / canvas.height;
-      cropCanvas.width  = Math.round(s.w * sx);
-      cropCanvas.height = Math.round(s.h * sy);
-      ctx.drawImage(img, s.x * sx, s.y * sy, s.w * sx, s.h * sy,
-                        0, 0, cropCanvas.width, cropCanvas.height);
+      const { x1, y1, x2, y2 } = c;
+      out.width  = Math.round((x2 - x1) * sx);
+      out.height = Math.round((y2 - y1) * sy);
+      ctx.drawImage(img, x1 * sx, y1 * sy, (x2 - x1) * sx, (y2 - y1) * sy,
+                        0, 0, out.width, out.height);
     }
 
-    const result = cropCanvas.toDataURL("image/jpeg", 0.92);
-    onCrop(result.split(",")[1], "image/jpeg");
+    const outMime = mimeType === "image/png" ? "image/png" : "image/jpeg";
+    const result  = out.toDataURL(outMime, outMime === "image/jpeg" ? 0.92 : undefined);
+    onCrop(result.split(",")[1], outMime);
   };
 
   return (
@@ -2211,7 +2301,7 @@ function CropModal({ dataUrl, mimeType, onCrop, onCancel }) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="crop-modal-hdr">
-          <h2>텍스트 영역 선택 <span>드래그로 범위 지정</span></h2>
+          <h2>텍스트 영역 선택 <span>꼭지점·내부 드래그로 조정</span></h2>
           <button type="button" className="crop-close-btn" onClick={onCancel}>
             <X size={14} />
           </button>
@@ -2223,10 +2313,10 @@ function CropModal({ dataUrl, mimeType, onCrop, onCancel }) {
             onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}
             onTouchStart={onDown} onTouchMove={onMove} onTouchEnd={onUp}
           />
-          <span className="crop-hint">영역 미선택 시 전체 이미지 처리</span>
         </div>
         <div className="crop-modal-footer">
           <button type="button" className="crop-cancel-btn" onClick={onCancel}>취소</button>
+          <button type="button" className="crop-reset-btn" onClick={initCrop}>초기화</button>
           <button type="button" className="crop-apply-btn" onClick={handleApply}>텍스트 추출</button>
         </div>
       </motion.div>
@@ -2479,6 +2569,7 @@ export default function IntelliMemoApp() {
           aiSettings={aiSettings}       setAiSettings={setAiSettings}
           aiStatus={aiStatus}
           onCorrectDraft={correctDraft}
+          onOcrError={(err) => setAiError(err)}
         />
 
         <section
