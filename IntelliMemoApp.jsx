@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  ArrowUp,
   CalendarDays,
+  Camera,
   Check,
   CheckCircle2,
   Copy,
   Flame,
   KeyRound,
   ListFilter,
-  ArrowUp,
   MessageSquareText,
   Monitor,
   Pencil,
@@ -48,6 +50,57 @@ const AI_MODELS = [
   { key: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash-Lite" },
 ];
 
+const AI_CORRECTION_MODES = [
+  {
+    key:   "typo",
+    label: "오타·띄어쓰기",
+    group: "typo",
+    modal: false,
+    prompt: (text) =>
+      `You proofread Korean 인텔리메모 notes. Return only the fully corrected Korean text. Fix typos and spacing errors only. Preserve every idea, detail, line break, meaning, intent, and tone. Do not summarize, shorten, omit, add explanations, labels, quotation marks, markdown, or alternatives. If already correct, return it unchanged.\n\n오타와 띄어쓰기만 교정해줘. 절대 내용을 바꾸거나 줄이지 마.\n\n${text}`,
+  },
+  {
+    key:   "grammar",
+    label: "문법",
+    group: "sentence",
+    modal: true,
+    prompt: (text) =>
+      `You are a Korean grammar corrector. Fix grammatical errors only: incorrect particles (조사), verb and adjective conjugation errors, tense errors, and awkward sentence structures. Do NOT change vocabulary, style, tone, or content. Return ONLY the corrected Korean text, no explanations.\n\n문법 오류만 교정해줘: 조사, 어미 활용, 시제, 문장 구조. 어휘·문체·내용은 그대로 유지해.\n\n${text}`,
+  },
+  {
+    key:   "style",
+    label: "문체",
+    group: "sentence",
+    modal: true,
+    prompt: (text) =>
+      `You are a Korean writing style editor. Improve the writing to make it clearer, more natural, and more polished. Refine word choice, improve sentence flow, and restructure for readability. Preserve all original ideas, facts, and intent. Return ONLY the improved Korean text, no explanations.\n\n문체를 자연스럽고 읽기 좋게 다듬어줘. 원래 내용과 의도는 모두 유지해.\n\n${text}`,
+  },
+  {
+    key:   "semantic",
+    label: "의미·맥락",
+    group: "sentence",
+    modal: true,
+    prompt: (text) =>
+      `You are a Korean semantic editor. Analyze the meaning, intent, and logical flow of the text. Fix ambiguous expressions, logical gaps, unclear references, and contradictions. Preserve the original ideas but clarify meaning so the text communicates the intended message precisely. Return ONLY the improved Korean text, no explanations.\n\n의미와 맥락을 분석해서 모호한 표현, 논리적 빈틈, 불명확한 지시어를 교정해줘. 원래 의도는 유지하되 전달력을 높여줘.\n\n${text}`,
+  },
+  {
+    key:   "translate",
+    label: "번역",
+    group: "translate",
+    modal: true,
+    prompt: (text) =>
+      `Detect the language of the following text and translate it into natural, fluent Korean. Return ONLY the translated Korean text. No explanations, no source language label, no alternatives.\n\n다음 텍스트의 언어를 자동으로 감지하고 자연스러운 한국어로 번역해줘. 번역문만 반환해.\n\n${text}`,
+  },
+];
+
+const AI_CORRECTION_GROUPS = [
+  { key: "typo",      label: "오타·띄어쓰기" },
+  { key: "sentence",  label: "문장 교정" },
+  { key: "translate", label: "번역" },
+];
+
+const DEFAULT_AI_CORRECTION_MODE = "typo";
+
 const UNDO_DELAY_MS = 3500;
 
 // ─── Utilities ───────────────────────────────────────────────────────────────
@@ -76,15 +129,15 @@ const saveJson = async (key, value) => {
 };
 
 const loadSessionValue = (key) => {
-  try { return window.sessionStorage?.getItem(key) ?? ""; }
+  try { return window.localStorage?.getItem(key) ?? ""; }
   catch { return ""; }
 };
 
 const saveSessionValue = (key, value) => {
   try {
-    if (!window.sessionStorage) return;
-    if (value) window.sessionStorage.setItem(key, value);
-    else window.sessionStorage.removeItem(key);
+    if (!window.localStorage) return;
+    if (value) window.localStorage.setItem(key, value);
+    else window.localStorage.removeItem(key);
   } catch {}
 };
 
@@ -166,10 +219,9 @@ const apiError = (status, errorText) => {
   return msg || `오류 ${status}`;
 };
 
-const correctKorean = async ({ apiKey, model, text, mode = "typo" }) => {
-  const prompt = mode === "sentence"
-    ? `You are a Korean writing editor. Read the following memo holistically and suggest a naturally improved version. Preserve all original ideas, facts, and intent — only improve flow, clarity, and sentence structure. Return ONLY the improved Korean text, no explanations.\n\n다음 메모를 맥락과 흐름을 고려해 자연스럽게 다듬어줘. 내용과 의미는 그대로 유지해.\n\n${text}`
-    : `You proofread Korean quick-capture notes. Return only the fully corrected Korean text. Fix typos and spacing errors only. Preserve every idea, detail, line break, meaning, intent, and tone. Do not summarize, shorten, omit, add explanations, labels, quotation marks, markdown, or alternatives. If already correct, return it unchanged.\n\n오타와 띄어쓰기만 교정해줘. 절대 내용을 바꾸거나 줄이지 마.\n\n${text}`;
+const correctKorean = async ({ apiKey, model, text, mode = DEFAULT_AI_CORRECTION_MODE }) => {
+  const modeConfig = AI_CORRECTION_MODES.find((m) => m.key === mode) ?? AI_CORRECTION_MODES[0];
+  const prompt = modeConfig.prompt(text);
 
   let res;
   try {
@@ -196,6 +248,33 @@ const correctKorean = async ({ apiKey, model, text, mode = "typo" }) => {
   const corrected = extractText(data);
   if (!corrected) throw new Error("교정 결과가 비어 있습니다.");
   return corrected;
+};
+
+const extractTextFromImage = async ({ apiKey, model, base64, mimeType = "image/jpeg" }) => {
+  let res;
+  try {
+    res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { text: "이미지에서 텍스트를 모두 추출해줘. 레이아웃과 줄바꿈을 최대한 보존하고 텍스트만 반환해. 텍스트가 없으면 빈 문자열을 반환해." },
+              { inline_data: { mime_type: mimeType, data: base64 } },
+            ],
+          }],
+          generationConfig: { maxOutputTokens: 2048, temperature: 0.1 },
+        }),
+      },
+    );
+  } catch (e) {
+    throw new Error(e instanceof TypeError ? "네트워크 연결을 확인하세요." : "API 호출 실패");
+  }
+  if (!res.ok) throw new Error(apiError(res.status, await res.text()));
+  const data = await res.json();
+  return extractText(data) ?? "";
 };
 
 // ─── CSS ─────────────────────────────────────────────────────────────────────
@@ -293,7 +372,7 @@ const CSS = `
     margin: 0;
     font-size: 22px; font-weight: 800;
     letter-spacing: -0.03em; line-height: 1.1;
-    color: var(--t1);
+    color: var(--t3);
   }
   .brand p {
     margin: 3px 0 0;
@@ -352,7 +431,9 @@ const CSS = `
     min-height: 0; min-width: 0;
     transition: background 130ms ease, color 130ms ease;
   }
-  .f-chip.on { background: var(--accent-bg); color: var(--accent); border-color: rgba(91,33,182,0.15); }
+  .f-chip.on[data-filter="all"]    { background: rgba(100,116,139,0.12); color: #64748b; border-color: rgba(100,116,139,0.4); }
+  .f-chip.on[data-filter="active"] { background: rgba(14,165,233,0.12);  color: #0ea5e9; border-color: rgba(14,165,233,0.4); }
+  .f-chip.on[data-filter="done"]   { background: rgba(16,185,129,0.12);  color: #10b981; border-color: rgba(16,185,129,0.4); }
 
   /* ── Tag filter strip (memo view) ── */
   .tag-filter-strip {
@@ -529,6 +610,7 @@ const CSS = `
   }
   .layout-toggle-btn:hover { background: rgba(0,0,0,0.09); color: var(--t1); }
   .layout-toggle-btn.landscape-active { background: var(--accent-bg); color: var(--accent); }
+  .layout-toggle-btn.reload-btn { color: var(--t3); }
 
   .memo-body {
     margin: 0;
@@ -743,6 +825,14 @@ const CSS = `
     color: var(--t3); background: var(--raised);
   }
 
+  .btn-camera {
+    color: var(--t2); background: var(--raised);
+    transition: background 120ms ease, color 120ms ease;
+  }
+  .btn-camera:hover  { background: rgba(0,0,0,0.08); color: var(--t1); }
+  .btn-camera:disabled { opacity: 0.3; cursor: default; }
+  .btn-camera.scanning svg { animation: spin 0.9s linear infinite; }
+
   .btn-submit {
     width: 36px; height: 36px; border-radius: 50%;
     background: var(--accent); color: #fff;
@@ -769,11 +859,15 @@ const CSS = `
   .ctrl input[type="date"] {
     font-size: 12px; font-weight: 600; color: var(--t1);
     color-scheme: light; cursor: pointer; flex: 1; text-align: center;
+    padding-right: 8px;
   }
 
   /* AI 처리 유형 선택 칩 (메모 전용) */
   .ai-mode-row {
     display: flex; align-items: center; gap: 5px; margin-top: 8px;
+  }
+  .ai-submode-row {
+    margin-top: 4px; padding-left: 2px;
   }
   .ai-mode-chip {
     display: inline-flex; align-items: center; gap: 3px;
@@ -783,10 +877,18 @@ const CSS = `
     white-space: nowrap; min-height: 0; min-width: 0;
     transition: background 110ms ease, color 110ms ease, border-color 110ms ease;
   }
-  .ai-mode-chip.on {
-    background: var(--accent-bg); color: var(--accent);
-    border-color: rgba(91,33,182,0.22);
-  }
+  .ai-mode-chip.typo-chip     { border-color: rgba(249,115,22,0.35); }
+  .ai-mode-chip.typo-chip.on  { background: rgba(249,115,22,0.12); color: #f97316; border-color: rgba(249,115,22,0.5); }
+  .ai-mode-chip.sentence-chip     { border-color: rgba(59,130,246,0.35); }
+  .ai-mode-chip.sentence-chip.on  { background: rgba(59,130,246,0.12); color: #3b82f6; border-color: rgba(59,130,246,0.5); }
+  .ai-mode-chip.translate-chip     { border-color: rgba(16,185,129,0.35); }
+  .ai-mode-chip.translate-chip.on  { background: rgba(16,185,129,0.12); color: #10b981; border-color: rgba(16,185,129,0.5); }
+  .ai-mode-chip.grammar-chip     { border-color: rgba(14,165,233,0.35); }
+  .ai-mode-chip.grammar-chip.on  { background: rgba(14,165,233,0.12); color: #0ea5e9; border-color: rgba(14,165,233,0.5); }
+  .ai-mode-chip.style-chip     { border-color: rgba(139,92,246,0.35); }
+  .ai-mode-chip.style-chip.on  { background: rgba(139,92,246,0.12); color: #8b5cf6; border-color: rgba(139,92,246,0.5); }
+  .ai-mode-chip.semantic-chip     { border-color: rgba(245,158,11,0.35); }
+  .ai-mode-chip.semantic-chip.on  { background: rgba(245,158,11,0.12); color: #f59e0b; border-color: rgba(245,158,11,0.5); }
 
   /* AI row */
   .ai-row {
@@ -979,118 +1081,6 @@ const CSS = `
     .ctrl:hover:not(.hi-on) { background: rgba(0,0,0,0.06); }
   }
 
-  /* ── Landscape narrow ── */
-  /* ── 가로 좁은 화면 (landscape 폰) ──────────────────────
-     DOM 순서: [hdr] [composer] [stage]
-     grid-area로 시각 위치 재배치:
-       왼쪽 사이드: hdr (위) + composer (아래)
-       오른쪽: stage (전체)
-  ─────────────────────────────────────────────────────── */
-  @media (min-width: 640px) and (max-height: 540px) and (orientation: landscape) {
-    .frame {
-      display: grid;
-      width: 100vw;
-      height: 100dvh;
-      overflow: hidden;
-      grid-template-columns: 240px 1fr;
-      grid-template-rows: auto 1fr;
-      grid-template-areas:
-        "hdr      stage"
-        "composer stage";
-    }
-    .hdr {
-      grid-area: hdr;
-      width: auto;
-      border-bottom: none;
-      border-right: 1px solid var(--border);
-    }
-    .composer {
-      grid-area: composer;
-      width: auto;
-      border-bottom: none;
-      border-top: 1px solid var(--border);
-      border-right: 1px solid var(--border);
-      box-shadow: none;
-      overflow-y: auto;
-      padding: 10px 12px;
-    }
-    .stage {
-      grid-area: stage;
-      flex: none;
-      width: 100%;
-      height: 100%;
-      padding: 12px;
-    }
-    .tag-row { flex-wrap: wrap; }
-    .tag-btn { flex: 1 1 calc(50% - 3px); }
-    .ai-panel { grid-template-columns: 1fr; }
-  }
-
-  /* ── Landscape 데스크탑 ──────────────────────────────────
-     DOM 순서: [hdr] [composer] [stage]
-     grid-area로 시각 위치 재배치:
-       왼쪽: hdr (세로 전체)
-       가운데: stage (세로 전체)
-       오른쪽: composer (세로 전체)
-  ─────────────────────────────────────────────────────── */
-  @media (min-width: 900px) and (orientation: landscape) {
-    .app { align-items: center; padding: 28px; }
-    .frame {
-      display: grid;
-      flex-direction: unset;
-      width: min(calc(100vw - 56px), 1180px);
-      height: min(840px, calc(100dvh - 56px));
-      min-height: 0;
-      overflow: hidden;
-      border-radius: 24px;
-      border: 1px solid var(--border-2);
-      box-shadow: var(--sh3);
-      background: var(--bg);
-      grid-template-columns: 256px 1fr 316px;
-      grid-template-rows: 1fr;
-      /* hdr=왼쪽, stage=가운데, composer=오른쪽 */
-      grid-template-areas: "hdr stage composer";
-    }
-    .hdr {
-      grid-area: hdr;
-      width: auto;
-      height: 100%;
-      border-bottom: none;
-      border-right: 1px solid var(--border);
-      border-radius: 24px 0 0 24px;
-      background: var(--bg);
-    }
-    .hdr-body { height: 100%; padding: 22px 18px; }
-    .stage {
-      grid-area: stage;
-      flex: none;
-      width: 100%;
-      height: 100%;
-      padding: 20px;
-      padding-bottom: 20px;
-    }
-    .memo-list, .action-list, .skel-wrap { max-width: 540px; margin-left: auto; margin-right: auto; }
-    .composer {
-      grid-area: composer;
-      width: auto;
-      height: 100%;
-      border-bottom: none;
-      border-top: none;
-      border-left: 1px solid var(--border);
-      border-radius: 0 24px 24px 0;
-      box-shadow: none;
-      background: #fff;
-      padding: 22px 18px;
-      overflow-y: auto;
-    }
-    .action-ctrl { flex-direction: column; }
-    .ai-panel { grid-template-columns: 1fr; }
-  }
-
-  @media (min-width: 1180px) and (orientation: landscape) {
-    .frame { grid-template-columns: 276px 1fr 340px; }
-  }
-
   /* ── 강제 레이아웃 토글 (헤더 버튼) ── */
 
   /* 강제 가로모드: .app은 세로 중앙 정렬 + 상하 패딩 */
@@ -1224,6 +1214,78 @@ const CSS = `
     max-width: none;
   }
   .frame.force-portrait .action-ctrl { flex-direction: row !important; }
+
+  /* ── 크롭 모달 ── */
+  .crop-overlay {
+    position: fixed; inset: 0; z-index: 210;
+    background: rgba(0,0,0,0.88);
+    display: flex; align-items: center; justify-content: center;
+    padding: 16px;
+  }
+  .crop-modal {
+    width: 100%; max-width: 680px;
+    background: #1a1a1a;
+    border-radius: 20px; overflow: hidden;
+    display: flex; flex-direction: column;
+    max-height: calc(100dvh - 32px);
+  }
+  .crop-modal-hdr {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.1);
+    flex-shrink: 0;
+  }
+  .crop-modal-hdr h2 {
+    margin: 0; font-size: 14px; font-weight: 700; color: #fff;
+  }
+  .crop-modal-hdr h2 span {
+    font-weight: 400; font-size: 12px; color: rgba(255,255,255,0.45); margin-left: 6px;
+  }
+  .crop-close-btn {
+    display: grid; place-items: center;
+    width: 28px; height: 28px; border-radius: 50%;
+    color: rgba(255,255,255,0.6); background: rgba(255,255,255,0.1);
+    transition: background 110ms ease;
+  }
+  .crop-close-btn:hover { background: rgba(255,255,255,0.18); }
+  .crop-canvas-wrap {
+    flex: 1; min-height: 0; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    background: #000; position: relative;
+  }
+  .crop-canvas {
+    display: block;
+    max-width: 100%;
+    max-height: calc(100dvh - 180px);
+    cursor: crosshair;
+    touch-action: none;
+    user-select: none; -webkit-user-select: none;
+  }
+  .crop-modal-footer {
+    display: flex; gap: 8px; padding: 12px 16px;
+    border-top: 1px solid rgba(255,255,255,0.1); flex-shrink: 0;
+  }
+  .crop-cancel-btn {
+    height: 40px; padding: 0 16px; border-radius: 999px;
+    background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.75);
+    font-size: 13px; font-weight: 600; min-height: 0;
+    transition: background 110ms ease;
+  }
+  .crop-cancel-btn:hover { background: rgba(255,255,255,0.14); }
+  .crop-reset-btn {
+    height: 40px; padding: 0 16px; border-radius: 999px;
+    background: transparent; color: rgba(255,255,255,0.55);
+    border: 1px solid rgba(255,255,255,0.18);
+    font-size: 13px; font-weight: 600; min-height: 0;
+    transition: background 110ms ease, color 110ms ease;
+  }
+  .crop-reset-btn:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.8); }
+  .crop-apply-btn {
+    flex: 1; height: 40px; border-radius: 999px;
+    background: var(--accent); color: #fff;
+    font-size: 13px; font-weight: 700; min-height: 0;
+    transition: background 110ms ease;
+  }
+  .crop-apply-btn:hover { background: var(--accent-mid); }
 `;
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -1256,6 +1318,15 @@ function Header({ activeView, setActiveView, actionFilter, setActionFilter, comp
               title={isLandscape ? "세로 모드" : "가로 모드"}
             >
               {isLandscape ? <Smartphone size={15} /> : <Monitor size={15} />}
+            </button>
+            <button
+              type="button"
+              className="layout-toggle-btn reload-btn"
+              onClick={() => window.location.reload()}
+              aria-label="새로고침"
+              title="새로고침"
+            >
+              <RotateCcw size={13} />
             </button>
             <span className="gemini-badge">
               <Sparkles size={11} />
@@ -1307,6 +1378,7 @@ function Header({ activeView, setActiveView, actionFilter, setActionFilter, comp
                   key={f.key}
                   type="button"
                   className={`f-chip${actionFilter === f.key ? " on" : ""}`}
+                  data-filter={f.key}
                   onClick={() => setActionFilter(f.key)}
                 >
                   {f.label}
@@ -1652,13 +1724,64 @@ function Composer({
   aiSettings, setAiSettings,
   aiStatus,
   onCorrectDraft,
+  onOcrError,
 }) {
   const memoRef   = useRef(null);
   const actionRef = useRef(null);
-  const [aiOpen,  setAiOpen]  = useState(false);
-  const [aiMode,  setAiMode]  = useState("typo"); // "typo" | "sentence"
+  const cameraRef = useRef(null);
+  const [aiOpen,   setAiOpen]   = useState(false);
+  const [aiMode,   setAiMode]   = useState(DEFAULT_AI_CORRECTION_MODE);
+  const [ocrState, setOcrState] = useState("idle"); // "idle" | "scanning" | "error"
+  const [cropData, setCropData] = useState(null);   // { dataUrl, mimeType } | null
 
   const correcting = aiStatus.state === "loading";
+
+  const handleCameraClick = () => {
+    if (!aiSettings.apiKey) { setAiOpen(true); return; }
+    cameraRef.current?.click();
+  };
+
+  const handleImageSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    const reader = new FileReader();
+    reader.onload = () => setCropData({ dataUrl: reader.result, mimeType: file.type || "image/jpeg" });
+    reader.readAsDataURL(file);
+  };
+
+  const handleCropConfirm = async (base64, mimeType) => {
+    setCropData(null);
+    setOcrState("scanning");
+
+    const fallbacks = getModelFallbacks(normalizeModel(aiSettings.model));
+    let lastError = null;
+    let lastModel = fallbacks.at(-1) ?? DEFAULT_AI_MODEL;
+
+    for (let i = 0; i < fallbacks.length; i++) {
+      const model = fallbacks[i];
+      lastModel = model;
+      setAiSettings((s) => ({ ...s, model }));
+      try {
+        const extracted = await extractTextFromImage({ apiKey: aiSettings.apiKey, model, base64, mimeType });
+        if (!extracted.trim()) {
+          setOcrState("error");
+          setTimeout(() => setOcrState("idle"), 2000);
+          return;
+        }
+        setMemoText((prev) => prev ? `${prev}\n${extracted}` : extracted);
+        setOcrState("idle");
+        return;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+
+    const message = lastError instanceof Error ? lastError.message : "OCR 실패";
+    setOcrState("error");
+    setTimeout(() => setOcrState("idle"), 2000);
+    onOcrError({ model: lastModel, message });
+  };
   const draftText  = activeView === "memos" ? memoText : actionText;
   const hasText    = draftText.trim().length > 0;
 
@@ -1732,7 +1855,10 @@ function Composer({
               />
               <div className="textarea-footer">
                 <span className="char-hint">
-                  {memoText.length > 0 ? `${memoText.length}자 · ⌘↵ 저장` : "⌘↵ 저장"}
+                  {ocrState === "scanning" ? "이미지 텍스트 추출 중…"
+                    : ocrState === "error"  ? "텍스트를 찾을 수 없음"
+                    : memoText.length > 0  ? `${memoText.length}자 · ⌘↵ 저장`
+                    : "⌘↵ 저장"}
                 </span>
                 <div className="btn-row">
                   {hasText && (
@@ -1747,11 +1873,21 @@ function Composer({
                   )}
                   <button
                     type="button"
+                    className={`icon-btn btn-camera${ocrState === "scanning" ? " scanning" : ""}`}
+                    disabled={ocrState === "scanning" || correcting}
+                    onClick={handleCameraClick}
+                    aria-label="카메라 OCR"
+                    title="사진에서 텍스트 추출"
+                  >
+                    <Camera size={16} />
+                  </button>
+                  <button
+                    type="button"
                     className={`icon-btn btn-ai${correcting ? " spinning" : ""}`}
                     disabled={!hasText || correcting}
                     onClick={() => onCorrectDraft(activeView, () => setAiOpen(true), aiMode)}
                     aria-label="AI 교정"
-                    title={aiMode === "sentence" ? "문장 교정 제안" : "오타·띄어쓰기 교정"}
+                    title={(AI_CORRECTION_MODES.find((m) => m.key === aiMode) ?? AI_CORRECTION_MODES[0]).label}
                   >
                     <Sparkles size={16} />
                   </button>
@@ -1763,6 +1899,14 @@ function Composer({
                   >
                     <ArrowUp size={16} strokeWidth={2.5} />
                   </button>
+                  <input
+                    ref={cameraRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    style={{ display: "none" }}
+                    onChange={handleImageSelect}
+                  />
                 </div>
               </div>
             </div>
@@ -1777,7 +1921,6 @@ function Composer({
           >
             <div className="action-ctrl">
               <label className="ctrl" style={{ cursor: "pointer" }}>
-                <CalendarDays size={14} />
                 <input
                   type="date"
                   value={actionDueDate}
@@ -1849,22 +1992,43 @@ function Composer({
       </AnimatePresence>
 
       {activeView === "memos" && (
-        <div className="ai-mode-row">
-          <button
-            type="button"
-            className={`ai-mode-chip${aiMode === "typo" ? " on" : ""}`}
-            onClick={() => setAiMode("typo")}
-          >
-            오타·띄어쓰기
-          </button>
-          <button
-            type="button"
-            className={`ai-mode-chip${aiMode === "sentence" ? " on" : ""}`}
-            onClick={() => setAiMode("sentence")}
-          >
-            문장 교정
-          </button>
-        </div>
+        <>
+          <div className="ai-mode-row">
+            {AI_CORRECTION_GROUPS.map((g) => {
+              const active = g.key === "typo" ? aiMode === "typo"
+                           : g.key === "translate" ? aiMode === "translate"
+                           : !["typo", "translate"].includes(aiMode);
+              return (
+                <button
+                  key={g.key}
+                  type="button"
+                  className={`ai-mode-chip ${g.key}-chip${active ? " on" : ""}`}
+                  onClick={() => {
+                    if (g.key === "typo") setAiMode("typo");
+                    else if (g.key === "translate") setAiMode("translate");
+                    else if (["typo", "translate"].includes(aiMode)) setAiMode("grammar");
+                  }}
+                >
+                  {g.label}
+                </button>
+              );
+            })}
+          </div>
+          {!["typo", "translate"].includes(aiMode) && (
+            <div className="ai-mode-row ai-submode-row">
+              {AI_CORRECTION_MODES.filter((m) => m.group === "sentence").map((m) => (
+                <button
+                  key={m.key}
+                  type="button"
+                  className={`ai-mode-chip ${m.key}-chip${aiMode === m.key ? " on" : ""}`}
+                  onClick={() => setAiMode(m.key)}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </>
       )}
 
       <div className="ai-row">
@@ -1885,6 +2049,21 @@ function Composer({
           {aiStatus.message}
         </button>
       </div>
+
+      {createPortal(
+        <AnimatePresence>
+          {cropData && (
+            <CropModal
+              key="crop-modal"
+              dataUrl={cropData.dataUrl}
+              mimeType={cropData.mimeType}
+              onCrop={handleCropConfirm}
+              onCancel={() => setCropData(null)}
+            />
+          )}
+        </AnimatePresence>,
+        document.body,
+      )}
 
       <AnimatePresence initial={false}>
         {aiOpen && (
@@ -1970,7 +2149,7 @@ function ErrorModal({ error, onClose }) {
 }
 
 // 문장 교정 결과 모달
-function CorrectionModal({ original, corrected, onApply, onCancel }) {
+function CorrectionModal({ original, corrected, onApply, onCancel, title = "문장 교정 제안", correctedLabel = "교정 제안" }) {
   return (
     <motion.div
       className="correction-overlay"
@@ -1989,7 +2168,7 @@ function CorrectionModal({ original, corrected, onApply, onCancel }) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="correction-modal-hdr">
-          <h2>문장 교정 제안 <span>AI가 제안한 교정입니다</span></h2>
+          <h2>{title} <span>AI가 제안한 내용입니다</span></h2>
           <button type="button" className="correction-close-btn" onClick={onCancel}>
             <X size={14} />
           </button>
@@ -2001,7 +2180,7 @@ function CorrectionModal({ original, corrected, onApply, onCancel }) {
           </div>
           <div className="correction-arrow">↓</div>
           <div className="correction-box suggested">
-            <p className="correction-label">교정 제안</p>
+            <p className="correction-label">{correctedLabel}</p>
             <p className="correction-text">{corrected}</p>
           </div>
         </div>
@@ -2014,11 +2193,246 @@ function CorrectionModal({ original, corrected, onApply, onCancel }) {
   );
 }
 
+// ─── CropModal ───────────────────────────────────────────────────────────────
+
+function CropModal({ dataUrl, mimeType, onCrop, onCancel }) {
+  const canvasRef = useRef(null);
+  const imgRef    = useRef(null);
+  const cropRef   = useRef(null); // { x1, y1, x2, y2 } in canvas px
+  const dragRef   = useRef(null); // { type, startX, startY, startCrop }
+
+  // ── 캔버스 그리기 ──
+  const redraw = useCallback(() => {
+    const canvas = canvasRef.current;
+    const img    = imgRef.current;
+    if (!canvas || !img) return;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    const c = cropRef.current;
+    if (!c) return;
+    const { x1, y1, x2, y2 } = c;
+    const w = x2 - x1, h = y2 - y1;
+
+    // 외부 어둡게
+    ctx.fillStyle = "rgba(0,0,0,0.52)";
+    ctx.fillRect(0, 0, canvas.width, y1);
+    ctx.fillRect(0, y2, canvas.width, canvas.height - y2);
+    ctx.fillRect(0, y1, x1, h);
+    ctx.fillRect(x2, y1, canvas.width - x2, h);
+
+    // 테두리
+    ctx.strokeStyle = "rgba(255,255,255,0.9)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x1 + 1, y1 + 1, w - 2, h - 2);
+
+    // 3분할 보조선
+    ctx.strokeStyle = "rgba(255,255,255,0.22)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x1 + w / 3, y1); ctx.lineTo(x1 + w / 3, y2);
+    ctx.moveTo(x1 + 2 * w / 3, y1); ctx.lineTo(x1 + 2 * w / 3, y2);
+    ctx.moveTo(x1, y1 + h / 3); ctx.lineTo(x2, y1 + h / 3);
+    ctx.moveTo(x1, y1 + 2 * h / 3); ctx.lineTo(x2, y1 + 2 * h / 3);
+    ctx.stroke();
+
+    // 꼭지점 L자 핸들
+    const ARM  = Math.min(w, h, 120) * 0.32;
+    const TICK = Math.max(2, ARM * 0.11);
+    ctx.fillStyle = "#fff";
+    ctx.shadowColor = "rgba(0,0,0,0.55)";
+    ctx.shadowBlur  = 8;
+    [
+      [x1, y1,  1,  1],
+      [x2, y1, -1,  1],
+      [x1, y2,  1, -1],
+      [x2, y2, -1, -1],
+    ].forEach(([cx, cy, sx, sy]) => {
+      ctx.fillRect(cx,           cy,           sx * ARM,  sy * TICK);
+      ctx.fillRect(cx,           cy,           sx * TICK, sy * ARM);
+    });
+
+    // 꼭지점 원형 닷 (터치 타깃 시각화)
+    ctx.shadowBlur = 0;
+    ctx.fillStyle  = "#fff";
+    [[x1, y1], [x2, y1], [x1, y2], [x2, y2]].forEach(([cx, cy]) => {
+      ctx.beginPath();
+      ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }, []);
+
+  // ── 기본 크롭 박스 (이미지 95% 영역) ──
+  const initCrop = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const pad = Math.min(canvas.width, canvas.height) * 0.04;
+    cropRef.current = { x1: pad, y1: pad, x2: canvas.width - pad, y2: canvas.height - pad };
+    redraw();
+  }, [redraw]);
+
+  useEffect(() => {
+    const img = new Image();
+    img.onload = () => {
+      imgRef.current = img;
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const scale = Math.min(1, 1400 / img.naturalWidth, 1400 / img.naturalHeight);
+      canvas.width  = Math.round(img.naturalWidth  * scale);
+      canvas.height = Math.round(img.naturalHeight * scale);
+      initCrop();
+    };
+    img.src = dataUrl;
+  }, [dataUrl, initCrop]);
+
+  // ── 좌표 변환 ──
+  const toCanvas = (e) => {
+    const canvas = canvasRef.current;
+    const rect   = canvas.getBoundingClientRect();
+    const src    = e.touches ? e.touches[0] : e;
+    return {
+      x: (src.clientX - rect.left) * (canvas.width  / rect.width),
+      y: (src.clientY - rect.top)  * (canvas.height / rect.height),
+    };
+  };
+
+  // ── 히트 테스트: 꼭지점 우선, 그 다음 내부 이동 ──
+  const hitTest = (p) => {
+    const c = cropRef.current;
+    if (!c) return null;
+    const canvas = canvasRef.current;
+    const rect   = canvas.getBoundingClientRect();
+    // 28 CSS px 터치 타깃 → 캔버스 좌표계 변환
+    const R = 28 * (canvas.width / rect.width);
+    const { x1, y1, x2, y2 } = c;
+    for (const [name, cx, cy] of [
+      ["tl", x1, y1], ["tr", x2, y1], ["bl", x1, y2], ["br", x2, y2],
+    ]) {
+      if ((p.x - cx) ** 2 + (p.y - cy) ** 2 <= R ** 2) return name;
+    }
+    if (p.x > x1 && p.x < x2 && p.y > y1 && p.y < y2) return "move";
+    return null;
+  };
+
+  const onDown = (e) => {
+    e.preventDefault();
+    const p   = toCanvas(e);
+    const hit = hitTest(p);
+    if (hit) {
+      dragRef.current = { type: hit, startX: p.x, startY: p.y, startCrop: { ...cropRef.current } };
+    }
+  };
+
+  const onMove = (e) => {
+    if (!dragRef.current) return;
+    e.preventDefault();
+    const p  = toCanvas(e);
+    const { type, startX, startY, startCrop: sc } = dragRef.current;
+    const canvas = canvasRef.current;
+    const MIN    = 30;
+    const dx = p.x - startX, dy = p.y - startY;
+    let { x1, y1, x2, y2 } = sc;
+
+    if (type === "move") {
+      const w = x2 - x1, h = y2 - y1;
+      x1 = Math.max(0, Math.min(canvas.width  - w, sc.x1 + dx));
+      y1 = Math.max(0, Math.min(canvas.height - h, sc.y1 + dy));
+      x2 = x1 + w; y2 = y1 + h;
+    } else {
+      if (type === "tl" || type === "bl") x1 = Math.max(0,             Math.min(sc.x2 - MIN, sc.x1 + dx));
+      if (type === "tr" || type === "br") x2 = Math.min(canvas.width,  Math.max(sc.x1 + MIN, sc.x2 + dx));
+      if (type === "tl" || type === "tr") y1 = Math.max(0,             Math.min(sc.y2 - MIN, sc.y1 + dy));
+      if (type === "bl" || type === "br") y2 = Math.min(canvas.height, Math.max(sc.y1 + MIN, sc.y2 + dy));
+    }
+
+    cropRef.current = { x1, y1, x2, y2 };
+    redraw();
+  };
+
+  const onUp = (e) => {
+    e.preventDefault();
+    dragRef.current = null;
+  };
+
+  // ── 크롭 적용 → OCR ──
+  const handleApply = () => {
+    const c   = cropRef.current;
+    const img = imgRef.current;
+    const canvas = canvasRef.current;
+    if (!img) return;
+
+    const out = document.createElement("canvas");
+    const ctx = out.getContext("2d");
+
+    const MAX_PX = 1400;
+    if (!c) {
+      const scale = Math.min(1, MAX_PX / img.naturalWidth, MAX_PX / img.naturalHeight);
+      out.width  = Math.round(img.naturalWidth  * scale);
+      out.height = Math.round(img.naturalHeight * scale);
+      ctx.drawImage(img, 0, 0, out.width, out.height);
+    } else {
+      const sx = img.naturalWidth  / canvas.width;
+      const sy = img.naturalHeight / canvas.height;
+      const { x1, y1, x2, y2 } = c;
+      const cropW = (x2 - x1) * sx;
+      const cropH = (y2 - y1) * sy;
+      const scale = Math.min(1, MAX_PX / cropW, MAX_PX / cropH);
+      out.width  = Math.round(cropW * scale);
+      out.height = Math.round(cropH * scale);
+      ctx.drawImage(img, x1 * sx, y1 * sy, cropW, cropH, 0, 0, out.width, out.height);
+    }
+
+    const outMime = mimeType === "image/png" ? "image/png" : "image/jpeg";
+    const result  = out.toDataURL(outMime, outMime === "image/jpeg" ? 0.92 : undefined);
+    onCrop(result.split(",")[1], outMime);
+  };
+
+  return (
+    <motion.div
+      className="crop-overlay"
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      transition={{ duration: 0.18 }}
+      onClick={onCancel}
+    >
+      <motion.div
+        className="crop-modal"
+        initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: 16 }}
+        transition={{ duration: 0.2, ease: [0.2, 0, 0, 1] }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="crop-modal-hdr">
+          <h2>텍스트 영역 선택 <span>꼭지점·내부 드래그로 조정</span></h2>
+          <button type="button" className="crop-close-btn" onClick={onCancel}>
+            <X size={14} />
+          </button>
+        </div>
+        <div className="crop-canvas-wrap">
+          <canvas
+            ref={canvasRef}
+            className="crop-canvas"
+            onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}
+            onTouchStart={onDown} onTouchMove={onMove} onTouchEnd={onUp}
+          />
+        </div>
+        <div className="crop-modal-footer">
+          <button type="button" className="crop-cancel-btn" onClick={onCancel}>취소</button>
+          <button type="button" className="crop-reset-btn" onClick={initCrop}>초기화</button>
+          <button type="button" className="crop-apply-btn" onClick={handleApply}>텍스트 추출</button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 export default function IntelliMemoApp() {
   const [activeView,     setActiveView]     = useState("memos");
-  const [layoutMode,     setLayoutMode]     = useState("auto"); // "auto" | "portrait" | "landscape"
+  const [layoutMode,     setLayoutMode]     = useState(() =>
+    typeof window !== "undefined" && window.innerWidth < 640 ? "portrait" : "landscape"
+  );
   const [memos,          setMemos]          = useState([]);
   const [actions,        setActions]        = useState([]);
   const [memoText,       setMemoText]       = useState("");
@@ -2065,6 +2479,14 @@ export default function IntelliMemoApp() {
     };
     hydrate();
     return () => { alive = false; };
+  }, []);
+
+  // ── 반응형 레이아웃 (뷰포트 너비 640px 기준) ──
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 639px)");
+    const handler = (e) => setLayoutMode(e.matches ? "portrait" : "landscape");
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
   }, []);
 
   // ── Tick ──
@@ -2171,7 +2593,7 @@ export default function IntelliMemoApp() {
   }, []);
 
   // ── AI correction ──
-  const correctDraft = useCallback(async (type, openSettings, mode = "typo") => {
+  const correctDraft = useCallback(async (type, openSettings, mode = DEFAULT_AI_CORRECTION_MODE) => {
     const text = type === "memos" ? memoText.trim() : actionText.trim();
     if (!text) return;
 
@@ -2180,6 +2602,8 @@ export default function IntelliMemoApp() {
       openSettings();
       return;
     }
+
+    const modeConfig = AI_CORRECTION_MODES.find((m) => m.key === mode) ?? AI_CORRECTION_MODES[0];
 
     setAiError(null);
     const fallbacks = getModelFallbacks(normalizeModel(aiSettings.model));
@@ -2192,16 +2616,14 @@ export default function IntelliMemoApp() {
       setAiSettings((s) => ({ ...s, model }));
       setAiStatus({
         state: "loading",
-        message: i === 0
-          ? `${mode === "sentence" ? "문장 교정" : "오타 교정"} 중…`
-          : `${model} 재시도 중…`,
+        message: i === 0 ? `${modeConfig.label} 중…` : `${model} 재시도 중…`,
       });
 
       try {
         const corrected = await correctKorean({ apiKey: aiSettings.apiKey, model, text, mode });
-        if (mode === "sentence" && type === "memos") {
-          setPendingCorrection({ original: text, corrected });
-          setAiStatus({ state: "success", message: "교정 제안 준비됨 ✓" });
+        if (modeConfig.modal && type === "memos") {
+          setPendingCorrection({ original: text, corrected, mode: modeConfig.key });
+          setAiStatus({ state: "success", message: `${modeConfig.label} 제안 준비됨 ✓` });
         } else {
           if (type === "memos") setMemoText(corrected);
           else setActionText(corrected);
@@ -2220,7 +2642,7 @@ export default function IntelliMemoApp() {
     setAiError({ model: lastModel, message });
   }, [memoText, actionText, aiSettings]);
 
-  const frameClass = layoutMode === "auto" ? "frame" : `frame force-${layoutMode}`;
+  const frameClass = `frame force-${layoutMode}`;
 
   return (
     <main className="app">
@@ -2249,6 +2671,7 @@ export default function IntelliMemoApp() {
           aiSettings={aiSettings}       setAiSettings={setAiSettings}
           aiStatus={aiStatus}
           onCorrectDraft={correctDraft}
+          onOcrError={(err) => setAiError(err)}
         />
 
         <section
@@ -2375,13 +2798,15 @@ export default function IntelliMemoApp() {
         )}
       </AnimatePresence>
 
-      {/* 문장 교정 모달 */}
+      {/* 교정/번역 모달 */}
       <AnimatePresence>
         {pendingCorrection && (
           <CorrectionModal
             key="correction-modal"
             original={pendingCorrection.original}
             corrected={pendingCorrection.corrected}
+            title={pendingCorrection.mode === "translate" ? "번역 제안" : "문장 교정 제안"}
+            correctedLabel={pendingCorrection.mode === "translate" ? "번역" : "교정 제안"}
             onApply={() => {
               setMemoText(pendingCorrection.corrected);
               setPendingCorrection(null);
