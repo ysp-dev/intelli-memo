@@ -4,12 +4,12 @@ import {
   CalendarDays,
   Check,
   CheckCircle2,
-  Circle,
   Copy,
   Flame,
   KeyRound,
   ListFilter,
   MessageSquareText,
+  Pencil,
   Plus,
   RotateCcw,
   Send,
@@ -395,43 +395,73 @@ const CSS = `
     padding: 0 2px;
   }
 
-  /* ── Memo group card ── */
-  .memo-group {
+  /* ── Swipe shell (공통) ─────────────────────────────────
+     swipe-wrap 하나만 overflow:hidden. 부모에는 절대 없애기.
+     이렇게 해야 스와이프 시 swipe-bg가 제대로 드러남.
+  ── */
+  .memo-list { display: flex; flex-direction: column; gap: 8px; }
+
+  .swipe-wrap {
+    position: relative;
+    overflow: hidden;        /* 단 한 겹 클리핑 */
+    border-radius: var(--r-l);
+  }
+
+  /* 삭제 배경: 오른쪽에 명확한 빨간 영역 */
+  .swipe-bg {
+    position: absolute;
+    inset: 0;
+    border-radius: var(--r-l);
+    background: #fee2e2;     /* 연분홍 → 카드 뒤 배경 */
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: 20px;
+  }
+
+  /* 휴지통 아이콘 - 빨간 원 안에 흰 아이콘 */
+  .delete-icon-circle {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: var(--red);
+    display: grid;
+    place-items: center;
+    color: #fff;
+    flex-shrink: 0;
+  }
+
+  /* ── Memo card (독립 카드, 그룹 없음) ── */
+  .memo-card {
+    position: relative;
+    width: 100%;
+    padding: 14px 16px;
     background: var(--surface);
     border-radius: var(--r-l);
     border: 1px solid var(--border);
     box-shadow: var(--sh1);
-    overflow: hidden;
+    touch-action: pan-y;
+    text-align: left;
+    /* layout shift 방지: height 변화를 자연스럽게 */
+    transition: box-shadow 120ms ease;
   }
 
-  .swipe-wrap { position: relative; overflow: hidden; }
-  .memo-group .swipe-wrap + .swipe-wrap { border-top: 1px solid var(--border); }
-
-  .swipe-bg {
-    position: absolute; inset: 0;
-    display: flex; align-items: center; justify-content: flex-end;
-    padding-right: 22px;
-    background: linear-gradient(to right, transparent 30%, var(--red-bg));
-    color: var(--red);
+  .memo-card.is-editing {
+    border-color: rgba(91,33,182,0.25);
+    box-shadow: 0 0 0 3px rgba(91,33,182,0.06), var(--sh1);
   }
-
-  /* ── Memo card ── */
-  .memo-card {
-    position: relative; width: 100%;
-    padding: 13px 16px 14px;
-    background: var(--surface);
-    touch-action: pan-y; text-align: left;
-    transition: background 110ms ease;
-  }
-  .memo-card:active { background: var(--raised); }
 
   .memo-top {
-    display: flex; align-items: center;
-    justify-content: space-between; gap: 8px;
-    margin-bottom: 7px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
   }
 
-  .memo-meta { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .memo-meta {
+    display: flex; align-items: center; gap: 8px;
+    flex: 1; min-width: 0;
+  }
 
   .tag-badge {
     display: inline-flex; align-items: center; gap: 5px;
@@ -442,19 +472,50 @@ const CSS = `
 
   .memo-time {
     font-size: 11px; color: var(--t3);
-    white-space: nowrap; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     font-variant-numeric: tabular-nums;
   }
 
-  .copy-btn {
+  /* 카드 액션 버튼 그룹 */
+  .memo-actions {
+    display: flex; align-items: center; gap: 4px; flex-shrink: 0;
+  }
+
+  .card-btn {
     display: grid; place-items: center;
-    width: 28px; height: 28px;
+    width: 30px; height: 30px;
     border-radius: var(--r-s);
-    color: var(--t3); background: var(--raised);
     flex-shrink: 0; min-height: 0; min-width: 0;
+    color: var(--t3); background: var(--raised);
     transition: background 110ms ease, color 110ms ease;
   }
-  .copy-btn.copied { background: var(--accent-bg); color: var(--accent); }
+  .card-btn:hover { background: rgba(0,0,0,0.08); }
+  .card-btn.edit-btn:hover { background: var(--accent-bg); color: var(--accent); }
+  .card-btn.copy-btn.copied { background: var(--accent-bg); color: var(--accent); }
+
+  /* 편집 액션 버튼 (저장/취소) */
+  .edit-actions {
+    display: flex; gap: 6px; margin-top: 8px;
+  }
+
+  .edit-save-btn {
+    flex: 1; height: 34px; border-radius: var(--r-s);
+    background: var(--accent); color: #fff;
+    font-size: 12px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; gap: 5px;
+    min-height: 0; min-width: 0;
+    transition: background 110ms ease;
+  }
+  .edit-save-btn:active { background: #4c1d95; }
+
+  .edit-cancel-btn {
+    height: 34px; padding: 0 14px; border-radius: var(--r-s);
+    background: var(--raised); color: var(--t2);
+    border: 1px solid var(--border);
+    font-size: 12px; font-weight: 600;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 0; min-width: 0;
+  }
 
   .memo-body {
     margin: 0;
@@ -471,22 +532,21 @@ const CSS = `
 
   .expand-btn {
     display: inline-flex; align-items: center; gap: 3px;
-    margin-top: 5px;
+    margin-top: 6px;
     font-size: 12px; font-weight: 600; color: var(--accent);
     background: none; min-height: 0; min-width: 0;
+    padding: 0;
   }
 
   .memo-editor {
-    width: 100%; margin-top: 8px;
-    padding: 10px 12px; border: 1.5px solid rgba(91,33,182,0.3);
-    border-radius: var(--r-s); background: var(--accent-bg);
+    width: 100%; margin-top: 2px;
+    padding: 10px 12px;
+    border: 1.5px solid rgba(91,33,182,0.3);
+    border-radius: var(--r-s);
+    background: var(--accent-bg);
     color: var(--t1); font-size: 14px; line-height: 1.65;
-    caret-color: var(--accent); min-height: 72px;
-  }
-
-  .save-hint {
-    margin-top: 6px;
-    font-size: 11px; color: var(--t3); text-align: right;
+    caret-color: var(--accent); min-height: 80px;
+    resize: none;
   }
 
   /* ── Action list ── */
@@ -520,7 +580,8 @@ const CSS = `
     border: 1px solid var(--border);
     box-shadow: var(--sh1);
     touch-action: pan-y;
-    transition: opacity 200ms ease;
+    /* layout="position" 없이도 자연스럽게 */
+    transition: opacity 200ms ease, box-shadow 120ms ease;
   }
   .action-card.hi { border-left: 3px solid #f59e0b; }
   .action-card.done { opacity: 0.38; }
@@ -974,20 +1035,36 @@ function EmptyState({ type }) {
 }
 
 function MemoCard({ memo, index, tick, onDelete, onEdit }) {
-  const [editing,   setEditing]   = useState(false);
-  const [draft,     setDraft]     = useState(memo.text);
-  const [copied,    setCopied]    = useState(false);
-  const [expanded,  setExpanded]  = useState(false);
-  const editorRef = useRef(null);
+  const [editing,  setEditing]  = useState(false);
+  const [draft,    setDraft]    = useState(memo.text);
+  const [copied,   setCopied]   = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const editorRef   = useRef(null);
+  const dragStartX  = useRef(0);
 
   const isLong = memo.text.split("\n").length > 4 || memo.text.length > 200;
 
-  useEffect(() => { if (editing) editorRef.current?.focus(); }, [editing]);
-  useEffect(() => { if (!editing) setDraft(memo.text); }, [editing, memo.text]);
+  useEffect(() => {
+    if (editing) {
+      const el = editorRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    }
+  }, [editing]);
+
+  useEffect(() => {
+    if (!editing) setDraft(memo.text);
+  }, [editing, memo.text]);
 
   const commit = () => {
     const t = draft.trim();
     if (t) onEdit(memo.id, t);
+    setEditing(false);
+  };
+
+  const cancelEdit = () => {
+    setDraft(memo.text);
     setEditing(false);
   };
 
@@ -1000,77 +1077,104 @@ function MemoCard({ memo, index, tick, onDelete, onEdit }) {
     } catch {}
   };
 
+  const stopProp = (e) => e.stopPropagation();
+
   return (
-    <motion.div className="swipe-wrap">
-      <div className="swipe-bg"><Trash2 size={15} /></div>
+    // swipe-wrap: 단일 overflow:hidden 레이어
+    <div className="swipe-wrap">
+      {/* 삭제 배경: 항상 뒤에 있고, 카드가 밀릴 때 드러남 */}
+      <div className="swipe-bg">
+        <div className="delete-icon-circle">
+          <Trash2 size={17} />
+        </div>
+      </div>
+
+      {/* 카드: drag로 왼쪽 밀기 → 삭제 */}
       <motion.article
-        layout="position"
-        drag="x"
-        dragConstraints={{ left: -108, right: 0 }}
-        dragElastic={0.055}
+        drag={editing ? false : "x"}          /* 편집 중 드래그 비활성 */
+        dragConstraints={{ left: -80, right: 0 }}
+        dragElastic={{ left: 0.1, right: 0 }}
+        dragMomentum={false}
+        onDragStart={(_, info) => { dragStartX.current = info.point.x; }}
         onDragEnd={(_, info) => {
-          if (info.offset.x < -80 || info.velocity.x < -480) onDelete(memo.id);
+          if (info.offset.x < -60 || info.velocity.x < -400) onDelete(memo.id);
         }}
-        onTap={() => !editing && setEditing(true)}
-        initial={{ opacity: 0, y: 18 }}
+        initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, x: -80 }}
-        whileTap={{ scale: 0.992 }}
-        transition={{ type: "spring", stiffness: 300, damping: 28, delay: index * 0.018 }}
-        className="memo-card"
-        style={{ display: "block" }}
+        exit={{ opacity: 0, x: -60 }}
+        transition={{ duration: 0.22, delay: index * 0.018, ease: [0.2, 0, 0, 1] }}
+        className={`memo-card${editing ? " is-editing" : ""}`}
       >
+        {/* 상단 행: 태그 / 시간 / 편집버튼 / 복사버튼 */}
         <div className="memo-top">
           <div className="memo-meta">
             <TagBadge tag={memo.tag} />
             <time className="memo-time">{relativeTime(memo.createdAt, tick)}</time>
           </div>
-          <button
-            type="button"
-            className={`copy-btn${copied ? " copied" : ""}`}
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={handleCopy}
-            aria-label={copied ? "복사됨" : "메모 복사"}
-          >
-            {copied ? <Check size={12} /> : <Copy size={12} />}
-          </button>
+          <div className="memo-actions">
+            {!editing && (
+              <button
+                type="button"
+                className="card-btn edit-btn"
+                onClick={(e) => { stopProp(e); setEditing(true); }}
+                aria-label="메모 편집"
+              >
+                <Pencil size={13} />
+              </button>
+            )}
+            <button
+              type="button"
+              className={`card-btn copy-btn${copied ? " copied" : ""}`}
+              onClick={handleCopy}
+              aria-label={copied ? "복사됨" : "메모 복사"}
+            >
+              {copied ? <Check size={13} /> : <Copy size={13} />}
+            </button>
+          </div>
         </div>
 
+        {/* 본문 영역 */}
         {editing ? (
           <>
             <textarea
               ref={editorRef}
               className="memo-editor"
               value={draft}
-              rows={Math.min(8, Math.max(3, draft.split("\n").length + 1))}
+              rows={Math.min(10, Math.max(3, draft.split("\n").length + 1))}
               onChange={(e) => setDraft(e.target.value)}
-              onBlur={commit}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) commit();
-                if (e.key === "Escape") setEditing(false);
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commit(); }
+                if (e.key === "Escape") cancelEdit();
               }}
             />
-            <p className="save-hint">⌘ Enter로 저장</p>
+            <div className="edit-actions">
+              <button type="button" className="edit-save-btn" onClick={commit}>
+                <Check size={13} />
+                저장 (⌘↵)
+              </button>
+              <button type="button" className="edit-cancel-btn" onClick={cancelEdit}>
+                취소
+              </button>
+            </div>
           </>
         ) : (
           <>
             <p className={`memo-body${isLong && !expanded ? " truncated" : ""}`}>
               {memo.text}
             </p>
-            {isLong && !editing && (
+            {isLong && (
               <button
                 type="button"
                 className="expand-btn"
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}
+                onClick={(e) => { stopProp(e); setExpanded((v) => !v); }}
               >
-                {expanded ? "접기" : "더 보기"}
+                {expanded ? "접기 ↑" : "더 보기 ↓"}
               </button>
             )}
           </>
         )}
       </motion.article>
-    </motion.div>
+    </div>
   );
 }
 
@@ -1102,27 +1206,49 @@ function ActionCard({ action, index, onToggle, onDelete }) {
   const isHigh  = action.priority === "high";
 
   return (
-    <motion.div className="swipe-wrap" style={{ borderRadius: 20 }}>
-      <div className="swipe-bg" style={{ borderRadius: 20 }}>
-        <Trash2 size={15} />
+    <div className="swipe-wrap">
+      {/* 삭제 배경 */}
+      <div className="swipe-bg">
+        <div className="delete-icon-circle">
+          <Trash2 size={17} />
+        </div>
       </div>
+
       <motion.article
-        layout="position"
         drag="x"
-        dragConstraints={{ left: -108, right: 0 }}
-        dragElastic={0.055}
+        dragConstraints={{ left: -80, right: 0 }}
+        dragElastic={{ left: 0.1, right: 0 }}
+        dragMomentum={false}
         onDragEnd={(_, info) => {
-          if (info.offset.x < -80 || info.velocity.x < -480) onDelete(action.id);
+          if (info.offset.x < -60 || info.velocity.x < -400) onDelete(action.id);
         }}
-        onTap={() => onToggle(action.id)}
-        initial={{ opacity: 0, y: 18 }}
+        initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, x: -80 }}
-        whileTap={{ scale: 0.992 }}
-        transition={{ type: "spring", stiffness: 300, damping: 28, delay: index * 0.018 }}
+        exit={{ opacity: 0, x: -60 }}
+        transition={{ duration: 0.22, delay: index * 0.018, ease: [0.2, 0, 0, 1] }}
         className={`action-card${action.done ? " done" : ""}${isHigh ? " hi" : ""}`}
       >
-        <Checkbox checked={action.done} />
+        {/* 체크박스: 클릭 시 토글, 드래그와 분리 */}
+        <button
+          type="button"
+          className={`chk${action.done ? " checked" : ""}`}
+          onClick={() => onToggle(action.id)}
+          aria-label={action.done ? "완료 취소" : "완료 처리"}
+        >
+          {action.done && (
+            <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+              <motion.path
+                d="M2 7l3.5 3.5L12 3"
+                stroke="currentColor" strokeWidth="2.2"
+                strokeLinecap="round" strokeLinejoin="round"
+                initial={{ pathLength: 0 }}
+                animate={{ pathLength: 1 }}
+                transition={{ duration: 0.22, ease: "easeOut" }}
+              />
+            </svg>
+          )}
+        </button>
+
         <div className="action-body">
           <p className="action-text">{action.text}</p>
           <div className="action-meta">
@@ -1139,7 +1265,7 @@ function ActionCard({ action, index, onToggle, onDelete }) {
           </div>
         </div>
       </motion.article>
-    </motion.div>
+    </div>
   );
 }
 
@@ -1738,7 +1864,8 @@ export default function IntelliMemoApp() {
                       memoGroups.map(([label, group]) => (
                         <div key={label} className="date-group">
                           <p className="date-group-label">{label}</p>
-                          <motion.div className="memo-group" layout>
+                          {/* layout 제거: 카드 높이 변경 시 형제 밀림 방지 */}
+                          <div className="memo-list">
                             <AnimatePresence initial={false}>
                               {group.map((memo, i) => (
                                 <MemoCard
@@ -1751,7 +1878,7 @@ export default function IntelliMemoApp() {
                                 />
                               ))}
                             </AnimatePresence>
-                          </motion.div>
+                          </div>
                         </div>
                       ))
                     )}
@@ -1782,7 +1909,7 @@ export default function IntelliMemoApp() {
                     {filteredActions.length === 0 ? (
                       <EmptyState type="actions" />
                     ) : (
-                      <motion.div className="action-list" layout>
+                      <div className="action-list">
                         <AnimatePresence initial={false}>
                           {filteredActions.map((action, i) => (
                             <ActionCard
@@ -1794,7 +1921,7 @@ export default function IntelliMemoApp() {
                             />
                           ))}
                         </AnimatePresence>
-                      </motion.div>
+                      </div>
                     )}
                   </>
                 )}
