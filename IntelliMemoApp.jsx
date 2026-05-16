@@ -199,17 +199,7 @@ const correctKorean = async ({ apiKey, model, text, mode = "typo" }) => {
   return corrected;
 };
 
-const imageToBase64 = (file) =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result.split(",")[1]);
-    reader.onerror = () => reject(new Error("이미지 읽기 실패"));
-    reader.readAsDataURL(file);
-  });
-
-const extractTextFromImage = async ({ apiKey, model, file }) => {
-  const base64 = await imageToBase64(file);
-  const mimeType = file.type || "image/jpeg";
+const extractTextFromImage = async ({ apiKey, model, base64, mimeType = "image/jpeg" }) => {
   let res;
   try {
     res = await fetch(
@@ -1158,6 +1148,76 @@ const CSS = `
     max-width: none;
   }
   .frame.force-portrait .action-ctrl { flex-direction: row !important; }
+
+  /* ── 크롭 모달 ── */
+  .crop-overlay {
+    position: fixed; inset: 0; z-index: 210;
+    background: rgba(0,0,0,0.88);
+    display: flex; align-items: center; justify-content: center;
+    padding: 16px;
+  }
+  .crop-modal {
+    width: 100%; max-width: 680px;
+    background: #1a1a1a;
+    border-radius: 20px; overflow: hidden;
+    display: flex; flex-direction: column;
+    max-height: calc(100dvh - 32px);
+  }
+  .crop-modal-hdr {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.1);
+    flex-shrink: 0;
+  }
+  .crop-modal-hdr h2 {
+    margin: 0; font-size: 14px; font-weight: 700; color: #fff;
+  }
+  .crop-modal-hdr h2 span {
+    font-weight: 400; font-size: 12px; color: rgba(255,255,255,0.45); margin-left: 6px;
+  }
+  .crop-close-btn {
+    display: grid; place-items: center;
+    width: 28px; height: 28px; border-radius: 50%;
+    color: rgba(255,255,255,0.6); background: rgba(255,255,255,0.1);
+    transition: background 110ms ease;
+  }
+  .crop-close-btn:hover { background: rgba(255,255,255,0.18); }
+  .crop-canvas-wrap {
+    flex: 1; min-height: 0; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    background: #000; position: relative;
+  }
+  .crop-canvas {
+    display: block;
+    max-width: 100%;
+    max-height: calc(100dvh - 180px);
+    cursor: crosshair;
+    touch-action: none;
+    user-select: none; -webkit-user-select: none;
+  }
+  .crop-hint {
+    position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,0.65); color: rgba(255,255,255,0.85);
+    font-size: 11px; font-weight: 600; padding: 4px 12px; border-radius: 999px;
+    white-space: nowrap; pointer-events: none;
+  }
+  .crop-modal-footer {
+    display: flex; gap: 8px; padding: 12px 16px;
+    border-top: 1px solid rgba(255,255,255,0.1); flex-shrink: 0;
+  }
+  .crop-cancel-btn {
+    height: 40px; padding: 0 20px; border-radius: 999px;
+    background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.8);
+    font-size: 13px; font-weight: 600; min-height: 0;
+    transition: background 110ms ease;
+  }
+  .crop-cancel-btn:hover { background: rgba(255,255,255,0.16); }
+  .crop-apply-btn {
+    flex: 1; height: 40px; border-radius: 999px;
+    background: var(--accent); color: #fff;
+    font-size: 13px; font-weight: 700; min-height: 0;
+    transition: background 110ms ease;
+  }
+  .crop-apply-btn:hover { background: var(--accent-mid); }
 `;
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -1593,6 +1653,7 @@ function Composer({
   const [aiOpen,   setAiOpen]   = useState(false);
   const [aiMode,   setAiMode]   = useState("typo"); // "typo" | "sentence"
   const [ocrState, setOcrState] = useState("idle"); // "idle" | "scanning" | "error"
+  const [cropData, setCropData] = useState(null);   // { dataUrl, mimeType } | null
 
   const correcting = aiStatus.state === "loading";
 
@@ -1601,16 +1662,24 @@ function Composer({
     cameraRef.current?.click();
   };
 
-  const handleImageSelect = async (e) => {
+  const handleImageSelect = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = "";
+    const reader = new FileReader();
+    reader.onload = () => setCropData({ dataUrl: reader.result, mimeType: file.type || "image/jpeg" });
+    reader.readAsDataURL(file);
+  };
+
+  const handleCropConfirm = async (base64, mimeType) => {
+    setCropData(null);
     setOcrState("scanning");
     try {
       const extracted = await extractTextFromImage({
         apiKey: aiSettings.apiKey,
         model: aiSettings.model || "gemini-2.5-flash",
-        file,
+        base64,
+        mimeType,
       });
       if (!extracted.trim()) {
         setOcrState("error");
@@ -1872,6 +1941,18 @@ function Composer({
         </button>
       </div>
 
+      <AnimatePresence>
+        {cropData && (
+          <CropModal
+            key="crop-modal"
+            dataUrl={cropData.dataUrl}
+            mimeType={cropData.mimeType}
+            onCrop={handleCropConfirm}
+            onCancel={() => setCropData(null)}
+          />
+        )}
+      </AnimatePresence>
+
       <AnimatePresence initial={false}>
         {aiOpen && (
           <motion.div
@@ -1994,6 +2075,159 @@ function CorrectionModal({ original, corrected, onApply, onCancel }) {
         <div className="correction-footer">
           <button type="button" className="correction-cancel-btn" onClick={onCancel}>취소</button>
           <button type="button" className="correction-apply-btn" onClick={onApply}>적용하기</button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ─── CropModal ───────────────────────────────────────────────────────────────
+
+function CropModal({ dataUrl, mimeType, onCrop, onCancel }) {
+  const canvasRef    = useRef(null);
+  const imgRef       = useRef(null);
+  const selRef       = useRef(null);   // { x, y, w, h } in canvas px
+  const dragStartRef = useRef(null);
+  const draggingRef  = useRef(false);
+
+  const redraw = useCallback(() => {
+    const canvas = canvasRef.current;
+    const img    = imgRef.current;
+    if (!canvas || !img) return;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    const s = selRef.current;
+    if (s && s.w > 2 && s.h > 2) {
+      ctx.fillStyle = "rgba(0,0,0,0.52)";
+      ctx.fillRect(0, 0, canvas.width, s.y);
+      ctx.fillRect(0, s.y + s.h, canvas.width, canvas.height - s.y - s.h);
+      ctx.fillRect(0, s.y, s.x, s.h);
+      ctx.fillRect(s.x + s.w, s.y, canvas.width - s.x - s.w, s.h);
+
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(s.x + 1, s.y + 1, s.w - 2, s.h - 2);
+
+      const cs = 14;
+      ctx.fillStyle = "#fff";
+      [[s.x, s.y], [s.x + s.w - cs, s.y],
+       [s.x, s.y + s.h - cs], [s.x + s.w - cs, s.y + s.h - cs]].forEach(([cx, cy]) => {
+        ctx.fillRect(cx, cy, cs, cs);
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    const img = new Image();
+    img.onload = () => {
+      imgRef.current = img;
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const maxW = 1400;
+      const scale = Math.min(1, maxW / img.naturalWidth);
+      canvas.width  = Math.round(img.naturalWidth  * scale);
+      canvas.height = Math.round(img.naturalHeight * scale);
+      redraw();
+    };
+    img.src = dataUrl;
+  }, [dataUrl, redraw]);
+
+  const toCanvasCoords = (e) => {
+    const canvas = canvasRef.current;
+    const rect   = canvas.getBoundingClientRect();
+    const cx = e.touches ? e.touches[0].clientX : e.clientX;
+    const cy = e.touches ? e.touches[0].clientY : e.clientY;
+    return {
+      x: Math.max(0, Math.min(canvas.width,  (cx - rect.left) * (canvas.width  / rect.width))),
+      y: Math.max(0, Math.min(canvas.height, (cy - rect.top)  * (canvas.height / rect.height))),
+    };
+  };
+
+  const onDown = (e) => {
+    e.preventDefault();
+    const p = toCanvasCoords(e);
+    draggingRef.current  = true;
+    dragStartRef.current = p;
+    selRef.current = { x: p.x, y: p.y, w: 0, h: 0 };
+    redraw();
+  };
+
+  const onMove = (e) => {
+    if (!draggingRef.current) return;
+    e.preventDefault();
+    const p = toCanvasCoords(e);
+    const s = dragStartRef.current;
+    selRef.current = {
+      x: Math.min(p.x, s.x), y: Math.min(p.y, s.y),
+      w: Math.abs(p.x - s.x), h: Math.abs(p.y - s.y),
+    };
+    redraw();
+  };
+
+  const onUp = (e) => {
+    e.preventDefault();
+    draggingRef.current = false;
+  };
+
+  const handleApply = () => {
+    const s   = selRef.current;
+    const img = imgRef.current;
+    const canvas = canvasRef.current;
+    if (!img) return;
+
+    const cropCanvas = document.createElement("canvas");
+    const ctx        = cropCanvas.getContext("2d");
+
+    if (!s || s.w < 10 || s.h < 10) {
+      cropCanvas.width  = img.naturalWidth;
+      cropCanvas.height = img.naturalHeight;
+      ctx.drawImage(img, 0, 0);
+    } else {
+      const sx = img.naturalWidth  / canvas.width;
+      const sy = img.naturalHeight / canvas.height;
+      cropCanvas.width  = Math.round(s.w * sx);
+      cropCanvas.height = Math.round(s.h * sy);
+      ctx.drawImage(img, s.x * sx, s.y * sy, s.w * sx, s.h * sy,
+                        0, 0, cropCanvas.width, cropCanvas.height);
+    }
+
+    const result = cropCanvas.toDataURL("image/jpeg", 0.92);
+    onCrop(result.split(",")[1], "image/jpeg");
+  };
+
+  return (
+    <motion.div
+      className="crop-overlay"
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      transition={{ duration: 0.18 }}
+      onClick={onCancel}
+    >
+      <motion.div
+        className="crop-modal"
+        initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: 16 }}
+        transition={{ duration: 0.2, ease: [0.2, 0, 0, 1] }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="crop-modal-hdr">
+          <h2>텍스트 영역 선택 <span>드래그로 범위 지정</span></h2>
+          <button type="button" className="crop-close-btn" onClick={onCancel}>
+            <X size={14} />
+          </button>
+        </div>
+        <div className="crop-canvas-wrap">
+          <canvas
+            ref={canvasRef}
+            className="crop-canvas"
+            onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}
+            onTouchStart={onDown} onTouchMove={onMove} onTouchEnd={onUp}
+          />
+          <span className="crop-hint">영역 미선택 시 전체 이미지 처리</span>
+        </div>
+        <div className="crop-modal-footer">
+          <button type="button" className="crop-cancel-btn" onClick={onCancel}>취소</button>
+          <button type="button" className="crop-apply-btn" onClick={handleApply}>텍스트 추출</button>
         </div>
       </motion.div>
     </motion.div>
