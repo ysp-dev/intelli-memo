@@ -267,13 +267,6 @@ const correctKorean = async ({ apiKey, model, text, mode = DEFAULT_AI_CORRECTION
     let rawMsg = body;
     try { const p = JSON.parse(body); rawMsg = p?.error?.message || body; } catch {}
     const ra = res.headers.get("Retry-After");
-    if (res.status === 429) {
-      console.group("[IntelliMemo] 429 Rate Limit Debug");
-      console.log("Retry-After header:", ra);
-      console.log("Error body (raw):", body);
-      console.log("Parsed message:", rawMsg);
-      console.groupEnd();
-    }
     const err = new Error(apiError(res.status, body));
     err.status = res.status;
     const retryAfterSec = parseRetryAfter(ra);
@@ -317,13 +310,6 @@ const extractTextFromImage = async ({ apiKey, model, base64, mimeType = "image/j
     let rawMsg = body;
     try { const p = JSON.parse(body); rawMsg = p?.error?.message || body; } catch {}
     const ra = res.headers.get("Retry-After");
-    if (res.status === 429) {
-      console.group("[IntelliMemo] 429 Rate Limit Debug");
-      console.log("Retry-After header:", ra);
-      console.log("Error body (raw):", body);
-      console.log("Parsed message:", rawMsg);
-      console.groupEnd();
-    }
     const err = new Error(apiError(res.status, body));
     err.status = res.status;
     const retryAfterSec = parseRetryAfter(ra);
@@ -695,8 +681,6 @@ const CSS = `
     display: flex; align-items: center; justify-content: center;
     color: var(--t3); flex-shrink: 0;
   }
-  .search-highlight { background: rgba(245,158,11,0.25); border-radius: 2px; }
-
   .memo-body {
     margin: 0;
     font-size: 14px; font-weight: 400; line-height: 1.65;
