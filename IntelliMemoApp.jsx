@@ -203,6 +203,20 @@ const extractText = (res) => {
   return "";
 };
 
+const parseRetryAfter = (header) => {
+  if (!header) return null;
+  if (/^\d+$/.test(header.trim())) {
+    const sec = parseInt(header, 10);
+    if (sec > 0) return sec;
+  }
+  const date = Date.parse(header);
+  if (Number.isFinite(date)) {
+    const diff = Math.ceil((date - Date.now()) / 1000);
+    return diff > 0 ? diff : null;
+  }
+  return null;
+};
+
 const detectRateLimitType = (rawMsg, retryAfter) => {
   const n = rawMsg.toLowerCase();
   if (n.includes("per day") || n.includes("per_day") || n.includes("daily")) return "rpd";
@@ -262,7 +276,8 @@ const correctKorean = async ({ apiKey, model, text, mode = DEFAULT_AI_CORRECTION
     }
     const err = new Error(apiError(res.status, body));
     err.status = res.status;
-    if (ra) err.retryAfter = parseInt(ra, 10);
+    const retryAfterSec = parseRetryAfter(ra);
+    if (retryAfterSec) err.retryAfter = retryAfterSec;
     if (res.status === 429) err.limitType = detectRateLimitType(rawMsg, ra);
     throw err;
   }
@@ -311,7 +326,8 @@ const extractTextFromImage = async ({ apiKey, model, base64, mimeType = "image/j
     }
     const err = new Error(apiError(res.status, body));
     err.status = res.status;
-    if (ra) err.retryAfter = parseInt(ra, 10);
+    const retryAfterSec = parseRetryAfter(ra);
+    if (retryAfterSec) err.retryAfter = retryAfterSec;
     if (res.status === 429) err.limitType = detectRateLimitType(rawMsg, ra);
     throw err;
   }
@@ -595,6 +611,7 @@ const CSS = `
   .memo-card.is-editing {
     border-color: rgba(91,33,182,0.25);
     box-shadow: 0 0 0 3px rgba(91,33,182,0.06), var(--sh1);
+    padding-bottom: 20px;
   }
 
   .memo-top {
@@ -704,7 +721,7 @@ const CSS = `
     background: var(--accent-bg);
     color: var(--t1); font-size: 14px; line-height: 1.65;
     caret-color: var(--accent); min-height: 80px;
-    resize: none;
+    resize: none; overflow: hidden;
   }
 
   /* ── Action list ── */
@@ -833,6 +850,10 @@ const CSS = `
   .tag-btn.on[data-tag="#업무"]    { background: #ede9fe; color: #5b21b6; border-color: rgba(124,58,237,0.28); }
   .tag-btn.on[data-tag="#아이디어"] { background: #ecfeff; color: #0e7490; border-color: rgba(6,182,212,0.28); }
   .tag-btn.on[data-tag="#개인"]    { background: #fce7f3; color: #9d174d; border-color: rgba(236,72,153,0.25); }
+  .tag-btn.sm {
+    flex: none; height: 22px; padding: 0 9px; border-radius: 999px;
+    font-size: 11px; border-width: 1px;
+  }
 
   /* Textarea composer */
   .textarea-wrap {
@@ -848,7 +869,7 @@ const CSS = `
   }
 
   .composer-textarea {
-    width: 100%; min-height: 52px; max-height: 160px;
+    width: 100%; min-height: 52px; max-height: 280px;
     padding: 14px 16px 10px;
     font-size: 15px; font-weight: 400; line-height: 1.5;
     color: var(--t1); overflow-y: auto;
@@ -1536,6 +1557,7 @@ function EmptyState({ type }) {
 function MemoCard({ memo, index, tick, onDelete, onEdit }) {
   const [editing,  setEditing]  = useState(false);
   const [draft,    setDraft]    = useState(memo.text);
+  const [draftTag, setDraftTag] = useState(memo.tag);
   const [copied,   setCopied]   = useState(false);
   const [expanded, setExpanded] = useState(false);
   const editorRef   = useRef(null);
@@ -1552,17 +1574,20 @@ function MemoCard({ memo, index, tick, onDelete, onEdit }) {
   }, [editing]);
 
   useEffect(() => {
-    if (!editing) setDraft(memo.text);
-  }, [editing, memo.text]);
+    if (!editing) { setDraft(memo.text); setDraftTag(memo.tag); }
+  }, [editing, memo.text, memo.tag]);
+
+  useAutoResize(editorRef, draft);
 
   const commit = () => {
     const t = draft.trim();
-    if (t) onEdit(memo.id, t);
+    if (t) onEdit(memo.id, t, draftTag);
     setEditing(false);
   };
 
   const cancelEdit = () => {
     setDraft(memo.text);
+    setDraftTag(memo.tag);
     setEditing(false);
   };
 
@@ -1607,7 +1632,7 @@ function MemoCard({ memo, index, tick, onDelete, onEdit }) {
         {/* 상단 행: 태그 / 시간 / 액션버튼들 */}
         <div className="memo-top">
           <div className="memo-meta">
-            <TagBadge tag={memo.tag} />
+            <TagBadge tag={editing ? draftTag : memo.tag} />
             <time className="memo-time">{relativeTime(memo.createdAt, tick)}</time>
           </div>
           <div className="memo-actions">
@@ -1661,17 +1686,32 @@ function MemoCard({ memo, index, tick, onDelete, onEdit }) {
 
         {/* 본문 영역 */}
         {editing ? (
-          <textarea
-            ref={editorRef}
-            className="memo-editor"
-            value={draft}
-            rows={Math.min(10, Math.max(3, draft.split("\n").length + 1))}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commit(); }
-              if (e.key === "Escape") cancelEdit();
-            }}
-          />
+          <>
+            <textarea
+              ref={editorRef}
+              className="memo-editor"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing) return;
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commit(); }
+                if (e.key === "Escape") cancelEdit();
+              }}
+            />
+            <div className="tag-row" style={{ marginTop: 8, marginBottom: 0 }}>
+              {TAGS.map((tag) => (
+                <button
+                  key={tag}
+                  type="button"
+                  data-tag={tag}
+                  className={`tag-btn sm${draftTag === tag ? " on" : ""}`}
+                  onClick={(e) => { e.stopPropagation(); setDraftTag(tag); }}
+                >
+                  {tag}
+                </button>
+              ))}
+            </div>
+          </>
         ) : (
           <>
             <p className={`memo-body${isLong && !expanded ? " truncated" : ""}`}>
@@ -1822,7 +1862,7 @@ function useAutoResize(ref, value) {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    el.style.height = "auto";
+    el.style.height = "0";
     el.style.height = `${el.scrollHeight}px`;
   }, [ref, value]);
 }
@@ -1892,13 +1932,19 @@ function Composer({
         setOcrState("idle");
         return;
       } catch (err) {
-        if (err.status === 429) {
+        if (err.status === 429 && (err.limitType ?? "unknown") === "rpd") {
           setOcrState("idle");
-          onRateLimit(err.limitType ?? "unknown", err.retryAfter ?? 60);
+          onRateLimit("rpd", 0);
           return;
         }
         lastError = err;
       }
+    }
+
+    if (lastError?.status === 429) {
+      setOcrState("idle");
+      onRateLimit(lastError.limitType ?? "unknown", lastError.retryAfter ?? 60);
+      return;
     }
 
     const message = lastError instanceof Error ? lastError.message : "OCR 실패";
@@ -2740,8 +2786,8 @@ export default function IntelliMemoApp() {
     });
   }, [memos, showToast]);
 
-  const editMemo = useCallback((id, text) => {
-    setMemos((cur) => cur.map((m) => m.id === id ? { ...m, text } : m));
+  const editMemo = useCallback((id, text, tag) => {
+    setMemos((cur) => cur.map((m) => m.id === id ? { ...m, text, tag } : m));
   }, []);
 
   const deleteAction = useCallback((id) => {
@@ -2804,18 +2850,24 @@ export default function IntelliMemoApp() {
         setTimeout(() => setAiStatus({ state: "idle", message: `Gemini · ${model}` }), 2500);
         return;
       } catch (err) {
-        if (err.status === 429) {
-          const limitType = err.limitType ?? "unknown";
-          if (limitType === "rpm") {
-            setRateLimitInfo({ type: "rpm", until: Date.now() + (err.retryAfter ?? 60) * 1000 });
-          } else {
-            setRateLimitInfo({ type: limitType });
-          }
+        if (err.status === 429 && (err.limitType ?? "unknown") === "rpd") {
+          setRateLimitInfo({ type: "rpd" });
           setAiStatus({ state: "rate-limited", message: "요청 한도 초과" });
           return;
         }
         lastError = err;
       }
+    }
+
+    if (lastError?.status === 429) {
+      const limitType = lastError.limitType ?? "unknown";
+      if (limitType === "rpm") {
+        setRateLimitInfo({ type: "rpm", until: Date.now() + (lastError.retryAfter ?? 60) * 1000 });
+      } else {
+        setRateLimitInfo({ type: limitType });
+      }
+      setAiStatus({ state: "rate-limited", message: "요청 한도 초과" });
+      return;
     }
 
     openSettings();
