@@ -789,6 +789,7 @@ const CSS = `
     color: var(--t3); background: var(--raised); border: 1px solid var(--border);
     white-space: nowrap; flex-shrink: 0;
   }
+  .m-chip svg { display: block; flex-shrink: 0; overflow: visible; }
   .m-chip.overdue { color: var(--amber); background: var(--amber-bg); border-color: rgba(217,119,6,0.2); }
   .m-chip.hi-pill { color: var(--amber); background: var(--amber-bg); border-color: rgba(217,119,6,0.2); }
 
@@ -864,7 +865,6 @@ const CSS = `
   }
   .textarea-wrap:focus-within {
     border-color: rgba(91,33,182,0.35);
-    box-shadow: 0 0 0 3px rgba(91,33,182,0.06);
     background: #fff;
   }
 
