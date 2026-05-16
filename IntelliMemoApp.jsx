@@ -1029,6 +1029,7 @@ const CSS = `
   }
   .ai-msg.loading, .ai-msg.success { color: var(--accent); }
   .ai-msg.error { color: var(--red); }
+  .ai-msg.rate-limited { color: #d97706; }
 
   /* AI panel */
   .ai-panel {
@@ -2763,7 +2764,7 @@ export default function IntelliMemoApp() {
         if (err.status === 429) {
           const sec = err.retryAfter ?? 60;
           setRateLimitUntil(Date.now() + sec * 1000);
-          setAiStatus({ state: "error", message: "요청 한도 초과" });
+          setAiStatus({ state: "rate-limited", message: "요청 한도 초과" });
           return;
         }
         lastError = err;
