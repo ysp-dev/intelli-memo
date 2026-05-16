@@ -719,7 +719,7 @@ const CSS = `
     border: 1.5px solid rgba(91,33,182,0.3);
     border-radius: var(--r-s);
     background: var(--accent-bg);
-    color: var(--t1); font-size: 14px; line-height: 1.65;
+    color: var(--t1); font-size: 16px; line-height: 1.65;
     caret-color: var(--accent); min-height: 80px;
     resize: none; overflow: hidden;
   }
@@ -871,7 +871,7 @@ const CSS = `
   .composer-textarea {
     width: 100%; min-height: 52px; max-height: 280px;
     padding: 14px 16px 10px;
-    font-size: 15px; font-weight: 400; line-height: 1.5;
+    font-size: 16px; font-weight: 400; line-height: 1.5;
     color: var(--t1); overflow-y: auto;
     caret-color: var(--accent);
     display: block;
@@ -941,7 +941,7 @@ const CSS = `
   }
   .ctrl.hi-on { background: var(--amber-bg); color: var(--amber); border-color: rgba(217,119,6,0.25); }
   .ctrl input[type="date"] {
-    font-size: 12px; font-weight: 600; color: var(--t1);
+    font-size: 16px; font-weight: 600; color: var(--t1);
     color-scheme: light; cursor: pointer; flex: 1; text-align: center;
     padding-right: 8px;
   }
