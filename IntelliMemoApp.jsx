@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   CalendarDays,
   Check,
+  CheckCircle2,
   Circle,
   Copy,
   Flame,
@@ -10,50 +11,61 @@ import {
   ListFilter,
   MessageSquareText,
   Plus,
+  RotateCcw,
   Send,
   Sparkles,
   Trash2,
-  Zap,
+  X,
 } from "lucide-react";
 
+// ─── Constants ───────────────────────────────────────────────────────────────
+
 const TAGS = ["#업무", "#아이디어", "#개인"];
-const TAG_COLORS = {
-  "#업무": { bg: "rgba(124,58,237,0.18)", border: "rgba(124,58,237,0.35)", text: "#a78bfa" },
-  "#아이디어": { bg: "rgba(6,182,212,0.15)", border: "rgba(6,182,212,0.32)", text: "#22d3ee" },
-  "#개인": { bg: "rgba(236,72,153,0.14)", border: "rgba(236,72,153,0.3)", text: "#f472b6" },
+
+const TAG_STYLES = {
+  "#업무":    { bg: "#ede9fe", color: "#5b21b6", dot: "#7c3aed" },
+  "#아이디어": { bg: "#ecfeff", color: "#0e7490", dot: "#06b6d4" },
+  "#개인":    { bg: "#fce7f3", color: "#9d174d", dot: "#ec4899" },
 };
+
+const DEFAULT_TAG = TAGS[0];
+
 const ACTION_FILTERS = [
-  { key: "all", label: "전체" },
+  { key: "all",    label: "전체" },
   { key: "active", label: "진행 중" },
-  { key: "done", label: "완료" },
+  { key: "done",   label: "완료" },
 ];
+
 const DEFAULT_AI_MODEL = "gemini-2.5-flash";
+
 const AI_MODELS = [
-  { key: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-  { key: "gemini-2.5-flash", label: "Gemini 2.5 Flash 추천" },
+  { key: "gemini-2.5-pro",        label: "Gemini 2.5 Pro" },
+  { key: "gemini-2.5-flash",      label: "Gemini 2.5 Flash 추천" },
   { key: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite" },
   { key: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash-Lite" },
 ];
 
+const UNDO_DELAY_MS = 3500;
+
+// ─── Utilities ───────────────────────────────────────────────────────────────
+
 const nowIso = () => new Date().toISOString();
 
-const unwrapStorageValue = (value) => {
-  if (typeof value === "string") return value;
-  if (value && typeof value.value === "string") return value.value;
-  return null;
-};
+const createId = () =>
+  window.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
-const loadStoredJson = async (key, fallback) => {
+const unwrapStorage = (v) =>
+  typeof v === "string" ? v : (v?.value ?? null);
+
+const loadJson = async (key, fallback) => {
   try {
     if (!window.storage?.get) return fallback;
-    const raw = unwrapStorageValue(await window.storage.get(key));
+    const raw = unwrapStorage(await window.storage.get(key));
     return raw ? JSON.parse(raw) : fallback;
-  } catch {
-    return fallback;
-  }
+  } catch { return fallback; }
 };
 
-const saveStoredJson = async (key, value) => {
+const saveJson = async (key, value) => {
   try {
     if (!window.storage?.set) return;
     await window.storage.set(key, JSON.stringify(value));
@@ -61,103 +73,91 @@ const saveStoredJson = async (key, value) => {
 };
 
 const relativeTime = (iso, tick) => {
-  const then = new Date(iso).getTime();
-  const diff = Math.max(0, tick - then);
-  const minutes = Math.floor(diff / 60000);
-  const hours = Math.floor(diff / 3600000);
-  if (minutes < 1) return "방금";
-  if (minutes < 60) return `${minutes}분 전`;
-  if (hours < 24) return `${hours}시간 전`;
-  if (hours < 48) return "어제";
-  const date = new Date(iso);
+  const diff = Math.max(0, tick - new Date(iso).getTime());
+  const min  = Math.floor(diff / 60_000);
+  const hr   = Math.floor(diff / 3_600_000);
+  if (min < 1)  return "방금";
+  if (min < 60) return `${min}분 전`;
+  if (hr  < 24) return `${hr}시간 전`;
+  if (hr  < 48) return "어제";
+  const d = new Date(iso);
+  return `${d.getMonth() + 1}월 ${d.getDate()}일`;
+};
+
+const dateGroupLabel = (iso) => {
+  const now    = new Date();
+  const date   = new Date(iso);
+  const diffMs = now.setHours(0,0,0,0) - new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  if (diffMs < 0)          return "오늘";
+  if (diffMs < 86_400_000) return "오늘";
+  if (diffMs < 172_800_000)return "어제";
   return `${date.getMonth() + 1}월 ${date.getDate()}일`;
 };
 
 const isPastDue = (date, done) => {
   if (!date || done) return false;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const today = new Date(); today.setHours(0,0,0,0);
   return new Date(`${date}T00:00:00`) < today;
 };
 
-const formatDueDate = (date) => {
+const formatDue = (date) => {
   if (!date) return "마감 없음";
-  const due = new Date(`${date}T00:00:00`);
-  return `${due.getMonth() + 1}/${due.getDate()}`;
+  const d = new Date(`${date}T00:00:00`);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
 };
-
-const createId = () =>
-  window.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
 const copyToClipboard = async (text) => {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.setAttribute("readonly", "");
-  textarea.style.cssText = "position:fixed;top:-9999px";
-  document.body.appendChild(textarea);
-  textarea.select();
+  if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return; }
+  const el = Object.assign(document.createElement("textarea"), {
+    value: text, style: "position:fixed;top:-9999px",
+  });
+  document.body.appendChild(el);
+  el.select();
   document.execCommand("copy");
-  textarea.remove();
+  el.remove();
 };
 
-const getModelFallbacks = (selectedModel) => {
-  const modelKeys = AI_MODELS.map((m) => m.key);
-  const startIndex = Math.max(0, modelKeys.indexOf(selectedModel));
-  return modelKeys.slice(startIndex);
+const getModelFallbacks = (model) => {
+  const keys = AI_MODELS.map((m) => m.key);
+  return keys.slice(Math.max(0, keys.indexOf(model)));
 };
 
-const normalizeAiModel = (model) =>
-  AI_MODELS.some((o) => o.key === model) ? model : DEFAULT_AI_MODEL;
+const normalizeModel = (model) =>
+  AI_MODELS.some((m) => m.key === model) ? model : DEFAULT_AI_MODEL;
 
-const extractResponseText = (response) => {
-  for (const candidate of response.candidates ?? []) {
-    const text = (candidate.content?.parts ?? [])
-      .map((part) => (typeof part.text === "string" ? part.text : ""))
-      .join("")
-      .trim();
-    if (text) return text;
+const extractText = (res) => {
+  for (const c of res.candidates ?? []) {
+    const t = (c.content?.parts ?? []).map((p) => p.text ?? "").join("").trim();
+    if (t) return t;
   }
   return "";
 };
 
-const isResponseTruncated = (response) =>
-  (response.candidates ?? []).some((c) => c.finishReason === "MAX_TOKENS");
-
-const summarizeApiError = (status, errorText) => {
-  let message = errorText;
-  try {
-    const parsed = JSON.parse(errorText);
-    message = parsed?.error?.message || parsed?.message || errorText;
-  } catch {}
-  const n = message.toLowerCase();
-  if (n.includes("api key not valid") || n.includes("api_key_invalid") || n.includes("invalid api key"))
-    return "Gemini API 키를 확인해주세요.";
-  if (n.includes("quota") || n.includes("rate limit") || n.includes("resource_exhausted"))
-    return "Gemini API 사용량 한도 또는 요청 빈도를 확인해주세요.";
-  if (n.includes("billing")) return "Google Cloud 결제 설정 또는 Gemini API 사용 권한을 확인해주세요.";
-  if (n.includes("permission") || n.includes("forbidden") || n.includes("access"))
-    return "Gemini API 키 권한을 확인해주세요.";
-  if (status === 400) return "Gemini API 키 또는 요청 형식을 확인해주세요.";
-  if (status === 401) return "Gemini API 키를 확인해주세요.";
-  if (status === 403) return "Gemini API 키 권한 또는 결제 설정을 확인해주세요.";
-  if (status === 404 && n.includes("model")) return "선택한 모델을 사용할 수 없습니다.";
-  if (status === 429) return "Gemini API 사용량 한도 또는 요청 빈도를 확인해주세요.";
-  if (status >= 500) return "Gemini API 서버 응답이 불안정합니다.";
-  return message || `Gemini API 오류 ${status}`;
+const apiError = (status, errorText) => {
+  let msg = errorText;
+  try { const p = JSON.parse(errorText); msg = p?.error?.message || p?.message || errorText; } catch {}
+  const n = msg.toLowerCase();
+  if (n.includes("api key not valid") || n.includes("invalid api key")) return "API 키가 유효하지 않습니다.";
+  if (n.includes("quota") || n.includes("rate limit") || n.includes("resource_exhausted")) return "API 사용량 한도 초과";
+  if (n.includes("billing")) return "Google Cloud 결제 설정을 확인하세요.";
+  if (n.includes("permission") || n.includes("forbidden")) return "API 키 권한을 확인하세요.";
+  if (status === 400) return "API 키 또는 요청 형식 오류";
+  if (status === 401) return "API 키 인증 실패";
+  if (status === 403) return "API 키 권한 없음";
+  if (status === 404 && n.includes("model")) return "선택한 모델 없음";
+  if (status === 429) return "요청 한도 초과, 잠시 후 재시도";
+  if (status >= 500) return "Gemini 서버 오류";
+  return msg || `오류 ${status}`;
 };
 
-const correctKoreanText = async ({ apiKey, model, text, type }) => {
-  let response;
+const correctKorean = async ({ apiKey, model, text, type }) => {
   const instruction =
     "You proofread Korean quick-capture notes. Return only the fully corrected Korean text. Preserve every idea, detail, line break, meaning, intent, and tone. Do not summarize, shorten, omit, add explanations, labels, quotation marks, markdown, or alternatives. If the text is already natural, return it unchanged.";
   const prompt = `${instruction}\n\n${type === "actions" ? "액션 아이템" : "메모"} 전체 내용을 자연스러운 한국어로 교정해줘. 절대 줄이거나 누락하지 마.\n\n${text}`;
 
+  let res;
   try {
-    response = await fetch(
+    res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
       {
         method: "POST",
@@ -168,1289 +168,753 @@ const correctKoreanText = async ({ apiKey, model, text, type }) => {
         }),
       },
     );
-  } catch (error) {
-    throw new Error(
-      error instanceof TypeError
-        ? "브라우저가 Gemini API 호출을 막았거나 네트워크에 연결할 수 없습니다."
-        : "API 호출에 실패했습니다.",
-    );
+  } catch (e) {
+    throw new Error(e instanceof TypeError ? "네트워크 연결을 확인하세요." : "API 호출 실패");
   }
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(summarizeApiError(response.status, errorText));
-  }
+  if (!res.ok) throw new Error(apiError(res.status, await res.text()));
 
-  const data = await response.json();
-  if (isResponseTruncated(data))
-    throw new Error("교정 결과가 너무 길어 중간에 끊겼습니다. 문장을 나눠서 다시 교정해주세요.");
-  const corrected = extractResponseText(data);
+  const data = await res.json();
+  if ((data.candidates ?? []).some((c) => c.finishReason === "MAX_TOKENS"))
+    throw new Error("결과가 너무 길어 중단됐습니다. 텍스트를 나눠서 교정하세요.");
+  const corrected = extractText(data);
   if (!corrected) throw new Error("교정 결과가 비어 있습니다.");
   return corrected;
 };
 
-// ─── CSS ────────────────────────────────────────────────────────────────────
+// ─── CSS ─────────────────────────────────────────────────────────────────────
 
 const CSS = `
-  @import url('https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;600;700;800&display=swap');
-
-  html, body, #root {
-    margin: 0;
-    min-height: 100%;
-  }
+  *, *::before, *::after { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body, #root { margin: 0; padding: 0; min-height: 100%; }
 
   body {
-    background: #060608;
-  }
-
-  *, *::before, *::after {
-    box-sizing: border-box;
-    -webkit-tap-highlight-color: transparent;
+    background: #f0eeea;
+    font-family: -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo',
+                 'Pretendard', 'Noto Sans KR', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    color: #111;
   }
 
   button, input, textarea, select {
-    font: inherit;
+    font: inherit; border: none; outline: none;
+    background: none; padding: 0; margin: 0; cursor: pointer;
   }
 
-  button {
-    border: 0;
-    cursor: pointer;
-    min-width: 44px;
-    min-height: 44px;
-  }
+  textarea { resize: none; }
 
   :root {
-    color-scheme: dark;
-    --bg: #060608;
-    --surface: #0d0d14;
-    --surface2: #12121c;
-    --text: rgba(255,255,255,0.94);
-    --text-muted: rgba(255,255,255,0.52);
-    --text-faint: rgba(255,255,255,0.28);
-    --line: rgba(255,255,255,0.07);
-    --line-strong: rgba(255,255,255,0.12);
+    --bg:       #f0eeea;
+    --surface:  #ffffff;
+    --raised:   #f7f6f3;
 
-    --violet: #7c3aed;
-    --violet-soft: rgba(124,58,237,0.18);
-    --violet-glow: rgba(124,58,237,0.28);
-    --cyan: #06b6d4;
-    --cyan-soft: rgba(6,182,212,0.14);
-    --cyan-glow: rgba(6,182,212,0.22);
-    --rose: #f43f5e;
-    --amber: #f59e0b;
+    --t1: #111111;
+    --t2: #555555;
+    --t3: #999999;
 
-    font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', system-ui, sans-serif;
-    letter-spacing: -0.01em;
+    --border:   rgba(0,0,0,0.07);
+    --border-2: rgba(0,0,0,0.13);
+
+    --accent:      #5b21b6;
+    --accent-bg:   #ede9fe;
+    --accent-mid:  #7c3aed;
+
+    --red:    #dc2626;
+    --red-bg: #fee2e2;
+
+    --amber:    #d97706;
+    --amber-bg: #fffbeb;
+
+    --green:    #16a34a;
+    --green-bg: #f0fdf4;
+
+    --sh1: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+    --sh2: 0 4px 16px rgba(0,0,0,0.07), 0 2px 6px rgba(0,0,0,0.04);
+    --sh3: 0 12px 40px rgba(0,0,0,0.09), 0 4px 12px rgba(0,0,0,0.05);
+
+    --r-s: 8px;
+    --r-m: 14px;
+    --r-l: 20px;
+    --r-xl: 26px;
   }
 
-  /* ── Aurora background ── */
-  .app-shell {
+  /* ── App ── */
+  .app { min-height: 100vh; min-height: 100dvh; background: var(--bg); display: flex; justify-content: center; }
+
+  .frame {
     position: relative;
-    min-height: 100vh;
-    min-height: 100dvh;
-    overflow: hidden;
-    display: flex;
-    justify-content: center;
-    background: var(--bg);
-    color: var(--text);
-  }
-
-  .aurora {
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    overflow: hidden;
-    z-index: 0;
-  }
-
-  .aurora-orb {
-    position: absolute;
-    border-radius: 50%;
-    filter: blur(80px);
-    opacity: 0.55;
-  }
-
-  .aurora-orb-1 {
-    width: 520px;
-    height: 520px;
-    top: -180px;
-    left: -140px;
-    background: radial-gradient(circle, rgba(124,58,237,0.7), rgba(67,20,180,0.3) 60%, transparent);
-    animation: orb1 18s ease-in-out infinite alternate;
-  }
-
-  .aurora-orb-2 {
-    width: 440px;
-    height: 440px;
-    top: -60px;
-    right: -120px;
-    background: radial-gradient(circle, rgba(6,182,212,0.55), rgba(2,100,150,0.25) 60%, transparent);
-    animation: orb2 22s ease-in-out infinite alternate;
-  }
-
-  .aurora-orb-3 {
-    width: 360px;
-    height: 360px;
-    bottom: 100px;
-    right: -80px;
-    background: radial-gradient(circle, rgba(244,63,94,0.35), transparent 65%);
-    animation: orb3 26s ease-in-out infinite alternate;
-  }
-
-  .aurora-orb-4 {
-    width: 300px;
-    height: 300px;
-    bottom: 60px;
-    left: -60px;
-    background: radial-gradient(circle, rgba(124,58,237,0.3), transparent 65%);
-    animation: orb4 20s ease-in-out infinite alternate;
-  }
-
-  @keyframes orb1 {
-    0%   { transform: translate(0, 0) scale(1); }
-    100% { transform: translate(60px, 80px) scale(1.1); }
-  }
-  @keyframes orb2 {
-    0%   { transform: translate(0, 0) scale(1); }
-    100% { transform: translate(-50px, 60px) scale(0.92); }
-  }
-  @keyframes orb3 {
-    0%   { transform: translate(0, 0) scale(1); }
-    100% { transform: translate(-40px, -50px) scale(1.08); }
-  }
-  @keyframes orb4 {
-    0%   { transform: translate(0, 0) scale(1); }
-    100% { transform: translate(30px, -40px) scale(0.95); }
-  }
-
-  .noise-overlay {
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: 1;
-    opacity: 0.028;
-    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-    background-size: 180px;
-  }
-
-  /* ── Phone frame ── */
-  .phone-frame {
-    position: relative;
-    z-index: 2;
     width: min(100vw, 430px);
     min-height: 100vh;
     min-height: 100dvh;
-    overflow: hidden;
-    border-left: 1px solid rgba(255,255,255,0.055);
-    border-right: 1px solid rgba(255,255,255,0.055);
   }
 
-  /* ── Top chrome / header ── */
-  .top-chrome {
-    position: fixed;
-    z-index: 20;
-    top: 0;
-    left: 50%;
-    transform: translateX(-50%);
+  /* ── Header ── */
+  .hdr {
+    position: fixed; z-index: 40;
+    top: 0; left: 50%; transform: translateX(-50%);
     width: min(100vw, 430px);
     padding-top: env(safe-area-inset-top);
-    padding-bottom: 14px;
-    background: linear-gradient(180deg, rgba(6,6,8,0.9) 0%, rgba(6,6,8,0.6) 100%);
-    backdrop-filter: blur(28px) saturate(1.4);
-    -webkit-backdrop-filter: blur(28px) saturate(1.4);
-    border-bottom: 1px solid rgba(255,255,255,0.06);
-    transition: padding-bottom 200ms ease;
+    background: rgba(240,238,234,0.94);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border-bottom: 1px solid var(--border);
+    transition: background 180ms ease;
   }
 
-  .top-chrome.is-compact {
-    padding-bottom: 10px;
-    background: rgba(6,6,8,0.82);
-    border-color: rgba(255,255,255,0.09);
+  .hdr.compact { background: rgba(240,238,234,0.98); }
+
+  .hdr-body {
+    padding: 14px 16px 12px;
+    display: flex; flex-direction: column; gap: 11px;
   }
 
-  .header-inner {
-    margin: 0 auto;
-    max-width: 430px;
-    padding: 10px 16px 0;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  }
+  .hdr-top { display: flex; align-items: flex-start; justify-content: space-between; }
 
-  .header-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-
-  .brand-block {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .brand-eyebrow {
-    font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    background: linear-gradient(90deg, var(--violet) 0%, var(--cyan) 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-  }
-
-  .brand-title {
+  .brand h1 {
     margin: 0;
-    font-size: 22px;
-    font-weight: 800;
-    line-height: 1.1;
-    letter-spacing: -0.03em;
-    color: var(--text);
+    font-size: 26px; font-weight: 800;
+    letter-spacing: -0.04em; line-height: 1.1;
+    color: var(--t1);
+  }
+  .brand p {
+    margin: 3px 0 0;
+    font-size: 10px; font-weight: 700;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--t3);
   }
 
-  .top-chrome.is-compact .brand-title {
-    font-size: 18px;
+  .hdr.compact .brand h1 { font-size: 20px; }
+
+  .gemini-badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    height: 30px; padding: 0 11px;
+    border-radius: 999px;
+    background: var(--accent-bg); color: var(--accent);
+    font-size: 11px; font-weight: 700;
   }
 
-  .ai-orb {
-    width: 44px;
-    height: 44px;
-    display: grid;
-    place-items: center;
-    border-radius: 14px;
-    position: relative;
-    overflow: hidden;
-    background: linear-gradient(135deg, rgba(124,58,237,0.22), rgba(6,182,212,0.16));
-    border: 1px solid rgba(124,58,237,0.3);
-    color: #a78bfa;
-    box-shadow: 0 0 20px rgba(124,58,237,0.18), inset 0 1px 0 rgba(255,255,255,0.1);
-  }
-
-  .ai-orb::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(135deg, rgba(255,255,255,0.08), transparent 50%);
-    border-radius: inherit;
-  }
-
-  /* ── Mode tabs ── */
-  .mode-tabs {
-    position: relative;
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 0;
-    padding: 4px;
-    border-radius: 14px;
-    background: rgba(255,255,255,0.055);
-    border: 1px solid var(--line);
+  /* ── Segment control ── */
+  .seg {
+    position: relative; display: grid; grid-template-columns: 1fr 1fr;
+    height: 44px; padding: 3px;
+    border-radius: var(--r-m);
+    background: rgba(0,0,0,0.055);
     overflow: hidden;
   }
 
-  .mode-indicator {
-    position: absolute;
-    top: 4px;
-    left: 4px;
-    width: calc(50% - 4px);
-    height: calc(100% - 8px);
-    border-radius: 10px;
-    background: linear-gradient(135deg, rgba(124,58,237,0.9), rgba(100,40,220,0.9));
-    box-shadow: 0 4px 16px rgba(124,58,237,0.35), inset 0 1px 0 rgba(255,255,255,0.15);
+  .seg-thumb {
+    position: absolute; top: 3px; left: 3px;
+    width: calc(50% - 3px); height: calc(100% - 6px);
+    border-radius: 11px;
+    background: var(--surface);
+    box-shadow: var(--sh1);
   }
 
-  .mode-tabs button {
-    position: relative;
-    z-index: 1;
-    min-height: 46px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 7px;
-    background: transparent;
-    border-radius: 10px;
-    color: var(--text-muted);
-    font-size: 14px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    transition: color 180ms ease;
+  .seg button {
+    position: relative; z-index: 1;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    border-radius: 11px;
+    font-size: 13px; font-weight: 600;
+    color: var(--t3);
+    min-height: 0; min-width: 0;
+    transition: color 160ms ease;
+  }
+  .seg button.on { color: var(--t1); }
+
+  /* ── Filter bar ── */
+  .filter-bar { display: flex; align-items: center; gap: 6px; }
+
+  .filter-bar svg { color: var(--t3); flex-shrink: 0; }
+
+  .f-chip {
+    height: 28px; padding: 0 12px; border-radius: 999px;
+    font-size: 12px; font-weight: 600; color: var(--t2);
+    background: rgba(0,0,0,0.045); border: 1px solid transparent;
+    min-height: 0; min-width: 0;
+    transition: background 130ms ease, color 130ms ease;
+  }
+  .f-chip.on { background: var(--accent-bg); color: var(--accent); border-color: rgba(91,33,182,0.15); }
+
+  /* ── Tag filter strip (memo view) ── */
+  .tag-filter-strip {
+    display: flex; align-items: center; gap: 6px; margin-bottom: 12px;
+    overflow-x: auto; scrollbar-width: none;
+  }
+  .tag-filter-strip::-webkit-scrollbar { display: none; }
+
+  .tf-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    height: 28px; padding: 0 10px; border-radius: 999px;
+    font-size: 11px; font-weight: 700;
+    white-space: nowrap; flex-shrink: 0;
+    border: 1.5px solid var(--border); color: var(--t2);
+    background: var(--surface);
+    min-height: 0; min-width: 0;
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
   }
 
-  .mode-tabs button.is-active {
-    color: #fff;
-  }
+  .tf-chip-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
 
-  /* ── Filter tabs ── */
-  .filter-tabs {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 4px;
-    border-radius: 12px;
-    background: rgba(255,255,255,0.045);
-    border: 1px solid var(--line);
-    min-height: 42px;
-  }
-
-  .filter-tabs-icon {
-    margin: 0 6px;
-    color: var(--text-faint);
-    flex-shrink: 0;
-  }
-
-  .filter-tabs button {
-    flex: 1;
-    min-height: 34px;
-    border-radius: 8px;
-    background: transparent;
-    color: var(--text-muted);
-    font-size: 12px;
-    font-weight: 600;
-    transition: background 160ms ease, color 160ms ease;
-  }
-
-  .filter-tabs button.is-active {
-    background: rgba(255,255,255,0.1);
-    color: var(--text);
-  }
+  .tf-chip.on[data-tag="all"]    { background: var(--t1); color: #fff; border-color: var(--t1); }
+  .tf-chip.on[data-tag="#업무"]   { background: #ede9fe; color: #5b21b6; border-color: rgba(124,58,237,0.3); }
+  .tf-chip.on[data-tag="#아이디어"]{ background: #ecfeff; color: #0e7490; border-color: rgba(6,182,212,0.3); }
+  .tf-chip.on[data-tag="#개인"]   { background: #fce7f3; color: #9d174d; border-color: rgba(236,72,153,0.25); }
 
   /* ── Scroll stage ── */
-  .scroll-stage {
+  .stage {
     width: min(100vw, 430px);
-    height: 100vh;
-    height: 100dvh;
-    overflow-y: auto;
-    scrollbar-width: none;
-    padding: 184px 14px 240px;
+    height: 100vh; height: 100dvh;
+    overflow-y: auto; scrollbar-width: none;
+    padding: 180px 14px 230px;
+  }
+  .stage::-webkit-scrollbar { display: none; }
+
+  /* ── Section label ── */
+  .sec-label {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .sec-label-text {
+    font-size: 11px; font-weight: 700;
+    letter-spacing: 0.06em; text-transform: uppercase; color: var(--t3);
+  }
+  .count-badge {
+    display: flex; align-items: center;
+    height: 20px; padding: 0 8px; border-radius: 999px;
+    background: rgba(0,0,0,0.06);
+    font-size: 11px; font-weight: 700; color: var(--t2);
   }
 
-  .scroll-stage::-webkit-scrollbar {
-    display: none;
+  /* ── Date group ── */
+  .date-group { margin-bottom: 16px; }
+
+  .date-group-label {
+    font-size: 11px; font-weight: 700;
+    letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--t3); margin-bottom: 6px;
+    padding: 0 2px;
   }
 
-  /* ── Stats bar ── */
-  .stats-bar {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 14px;
-  }
-
-  .stat-chip {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 12px;
-    border-radius: 999px;
-    background: rgba(255,255,255,0.05);
-    border: 1px solid var(--line);
-    font-size: 11px;
-    font-weight: 700;
-    color: var(--text-muted);
-    letter-spacing: 0.02em;
-  }
-
-  .stat-chip .stat-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-  }
-
-  .stat-chip.violet .stat-dot { background: var(--violet); box-shadow: 0 0 6px var(--violet); }
-  .stat-chip.cyan .stat-dot   { background: var(--cyan);   box-shadow: 0 0 6px var(--cyan); }
-  .stat-chip.rose .stat-dot   { background: var(--rose);   box-shadow: 0 0 6px var(--rose); }
-
-  /* ── Memo list (bento style) ── */
-  .memo-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-    border-radius: 18px;
-    overflow: hidden;
-    border: 1px solid rgba(255,255,255,0.07);
-    background: rgba(255,255,255,0.025);
-    backdrop-filter: blur(24px);
-  }
-
-  .swipe-shell {
-    position: relative;
+  /* ── Memo group card ── */
+  .memo-group {
+    background: var(--surface);
+    border-radius: var(--r-l);
+    border: 1px solid var(--border);
+    box-shadow: var(--sh1);
     overflow: hidden;
   }
 
-  .memo-list .swipe-shell {
-    border-bottom: 1px solid rgba(255,255,255,0.055);
-  }
+  .swipe-wrap { position: relative; overflow: hidden; }
+  .memo-group .swipe-wrap + .swipe-wrap { border-top: 1px solid var(--border); }
 
-  .memo-list .swipe-shell:last-child {
-    border-bottom: 0;
-  }
-
-  .delete-reveal {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    justify-content: flex-end;
-    align-items: center;
-    padding-right: 20px;
-    background: linear-gradient(90deg, transparent 30%, rgba(244,63,94,0.55));
-    color: #fff;
+  .swipe-bg {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: flex-end;
+    padding-right: 22px;
+    background: linear-gradient(to right, transparent 30%, var(--red-bg));
+    color: var(--red);
   }
 
   /* ── Memo card ── */
   .memo-card {
-    position: relative;
-    width: 100%;
-    min-height: 84px;
-    padding: 14px 14px 15px;
-    background: transparent;
-    border: 0;
-    border-radius: 0;
-    touch-action: pan-y;
-    cursor: pointer;
-    transition: background 160ms ease;
+    position: relative; width: 100%;
+    padding: 13px 16px 14px;
+    background: var(--surface);
+    touch-action: pan-y; text-align: left;
+    transition: background 110ms ease;
+  }
+  .memo-card:active { background: var(--raised); }
+
+  .memo-top {
+    display: flex; align-items: center;
+    justify-content: space-between; gap: 8px;
+    margin-bottom: 7px;
   }
 
-  .memo-card:active {
-    background: rgba(255,255,255,0.04);
-  }
+  .memo-meta { display: flex; align-items: center; gap: 8px; min-width: 0; }
 
-  .memo-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    margin-bottom: 8px;
+  .tag-badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    height: 22px; padding: 0 9px; border-radius: 999px;
+    font-size: 11px; font-weight: 700; flex-shrink: 0;
   }
-
-  .memo-meta {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-  }
-
-  .tag-chip {
-    display: inline-flex;
-    align-items: center;
-    padding: 2px 10px;
-    border-radius: 999px;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.01em;
-    white-space: nowrap;
-  }
+  .tag-badge-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
 
   .memo-time {
-    font-family: 'SF Mono', ui-monospace, monospace;
-    font-size: 10px;
-    color: var(--text-faint);
-    white-space: nowrap;
+    font-size: 11px; color: var(--t3);
+    white-space: nowrap; min-width: 0;
+    font-variant-numeric: tabular-nums;
   }
+
+  .copy-btn {
+    display: grid; place-items: center;
+    width: 28px; height: 28px;
+    border-radius: var(--r-s);
+    color: var(--t3); background: var(--raised);
+    flex-shrink: 0; min-height: 0; min-width: 0;
+    transition: background 110ms ease, color 110ms ease;
+  }
+  .copy-btn.copied { background: var(--accent-bg); color: var(--accent); }
 
   .memo-body {
     margin: 0;
-    color: rgba(255,255,255,0.87);
-    font-size: 14px;
-    line-height: 1.6;
-    font-weight: 400;
-    overflow-wrap: anywhere;
+    font-size: 14px; font-weight: 400; line-height: 1.65;
+    color: var(--t1); overflow-wrap: anywhere;
   }
 
-  .memo-copy {
-    flex-shrink: 0;
-    width: 32px;
-    height: 32px;
-    min-width: 32px;
-    min-height: 32px;
-    display: grid;
-    place-items: center;
-    border-radius: 10px;
-    background: rgba(255,255,255,0.06);
-    border: 1px solid rgba(255,255,255,0.08);
-    color: var(--text-muted);
-    transition: background 160ms ease, color 160ms ease, border-color 160ms ease;
+  .memo-body.truncated {
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
 
-  .memo-copy.is-copied {
-    background: rgba(124,58,237,0.22);
-    border-color: rgba(124,58,237,0.4);
-    color: #a78bfa;
+  .expand-btn {
+    display: inline-flex; align-items: center; gap: 3px;
+    margin-top: 5px;
+    font-size: 12px; font-weight: 600; color: var(--accent);
+    background: none; min-height: 0; min-width: 0;
   }
 
-  .memo-edit {
-    width: 100%;
-    min-height: 72px;
+  .memo-editor {
+    width: 100%; margin-top: 8px;
+    padding: 10px 12px; border: 1.5px solid rgba(91,33,182,0.3);
+    border-radius: var(--r-s); background: var(--accent-bg);
+    color: var(--t1); font-size: 14px; line-height: 1.65;
+    caret-color: var(--accent); min-height: 72px;
+  }
+
+  .save-hint {
     margin-top: 6px;
-    resize: none;
-    border: 1px solid rgba(124,58,237,0.3);
-    outline: 0;
-    color: var(--text);
-    background: rgba(124,58,237,0.08);
-    border-radius: 10px;
-    padding: 10px 12px;
-    line-height: 1.6;
-    font-size: 13px;
-    caret-color: #a78bfa;
+    font-size: 11px; color: var(--t3); text-align: right;
   }
 
   /* ── Action list ── */
-  .action-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
+  .action-list { display: flex; flex-direction: column; gap: 8px; }
+
+  /* ── Progress bar ── */
+  .progress-bar-wrap { margin-bottom: 12px; }
+  .progress-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .progress-label { font-size: 12px; font-weight: 600; color: var(--t2); }
+  .progress-pct { font-size: 12px; font-weight: 700; color: var(--accent); }
+
+  .progress-track {
+    height: 6px; border-radius: 999px;
+    background: rgba(0,0,0,0.07); overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent-mid), var(--accent));
+    transition: width 400ms ease;
   }
 
+  /* ── Action card ── */
   .action-card {
-    position: relative;
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    min-height: 78px;
+    position: relative; display: flex; align-items: flex-start; gap: 12px;
     padding: 14px 16px;
-    border-radius: 16px;
-    background: rgba(255,255,255,0.038);
-    border: 1px solid var(--line);
-    backdrop-filter: blur(20px);
+    background: var(--surface);
+    border-radius: var(--r-l);
+    border: 1px solid var(--border);
+    box-shadow: var(--sh1);
     touch-action: pan-y;
-    transition: opacity 200ms ease, filter 200ms ease;
+    transition: opacity 200ms ease;
   }
+  .action-card.hi { border-left: 3px solid #f59e0b; }
+  .action-card.done { opacity: 0.38; }
 
-  .action-card.is-high {
-    background: rgba(124,58,237,0.07);
-    border-color: rgba(124,58,237,0.22);
-    box-shadow: inset 2px 0 0 var(--violet), 0 0 28px rgba(124,58,237,0.1);
+  /* ── Checkbox ── */
+  .chk {
+    flex-shrink: 0; width: 24px; height: 24px; margin-top: 1px;
+    border-radius: 6px; border: 2px solid var(--border-2);
+    background: var(--surface); display: grid; place-items: center;
+    color: transparent; min-height: 0; min-width: 0;
+    transition: background 180ms ease, border-color 180ms ease, color 180ms ease;
   }
+  .chk.checked { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-  .action-card.is-done {
-    opacity: 0.38;
-    filter: saturate(0.5);
-  }
+  .action-body { flex: 1; min-width: 0; }
 
   .action-text {
-    margin: 0;
-    color: var(--text);
-    font-size: 15px;
-    line-height: 1.45;
-    font-weight: 520;
-    overflow-wrap: anywhere;
+    margin: 0 0 6px;
+    font-size: 14px; font-weight: 500; line-height: 1.55;
+    color: var(--t1); overflow-wrap: anywhere;
   }
+  .action-card.done .action-text { text-decoration: line-through; color: var(--t3); }
 
-  .action-card.is-done .action-text {
-    text-decoration: line-through;
-    color: var(--text-muted);
-  }
+  .action-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
-  /* ── Check mark ── */
-  .check-wrap {
-    flex-shrink: 0;
-    width: 42px;
-    height: 42px;
-    display: grid;
-    place-items: center;
-    border-radius: 13px;
-    color: var(--text-faint);
-    background: rgba(255,255,255,0.05);
-    border: 1px solid var(--line);
-    transition: background 200ms ease, border-color 200ms ease, color 200ms ease;
+  .m-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    height: 22px; padding: 0 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+    color: var(--t3); background: var(--raised); border: 1px solid var(--border);
   }
-
-  .check-wrap.is-done {
-    background: linear-gradient(135deg, rgba(124,58,237,0.85), rgba(100,40,220,0.85));
-    border-color: rgba(124,58,237,0.5);
-    color: #fff;
-    box-shadow: 0 4px 16px rgba(124,58,237,0.3);
-  }
-
-  /* ── Action meta ── */
-  .action-meta {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin-top: 6px;
-  }
-
-  .meta-tag {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 9px;
-    border-radius: 999px;
-    font-family: 'SF Mono', ui-monospace, monospace;
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--text-faint);
-    background: rgba(255,255,255,0.05);
-    border: 1px solid var(--line);
-  }
-
-  .meta-tag.is-past {
-    color: rgba(245,158,11,0.9);
-    background: rgba(245,158,11,0.1);
-    border-color: rgba(245,158,11,0.25);
-  }
-
-  .priority-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 9px;
-    border-radius: 999px;
-    font-size: 10px;
-    font-weight: 700;
-    color: var(--text-faint);
-    background: rgba(255,255,255,0.05);
-    border: 1px solid var(--line);
-  }
-
-  .priority-pill.is-high {
-    color: #fbbf24;
-    background: rgba(245,158,11,0.12);
-    border-color: rgba(245,158,11,0.28);
-  }
+  .m-chip.overdue { color: var(--amber); background: var(--amber-bg); border-color: rgba(217,119,6,0.2); }
+  .m-chip.hi-pill { color: var(--amber); background: var(--amber-bg); border-color: rgba(217,119,6,0.2); }
 
   /* ── Empty state ── */
-  .empty-state {
-    min-height: 280px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 16px;
-    text-align: center;
+  .empty {
+    min-height: 260px;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 14px; text-align: center;
   }
-
-  .empty-icon-wrap {
-    width: 64px;
-    height: 64px;
-    display: grid;
-    place-items: center;
-    border-radius: 20px;
-    background: linear-gradient(135deg, var(--violet-soft), var(--cyan-soft));
-    border: 1px solid rgba(124,58,237,0.2);
-    color: #a78bfa;
+  .empty-icon {
+    width: 54px; height: 54px;
+    border-radius: var(--r-l);
+    background: var(--accent-bg); color: var(--accent);
+    display: grid; place-items: center;
   }
-
-  .empty-label {
-    color: var(--text-muted);
-    font-size: 14px;
-    font-weight: 500;
-    line-height: 1.5;
-    max-width: 240px;
+  .empty p {
+    margin: 0; font-size: 14px; font-weight: 500;
+    color: var(--t3); line-height: 1.6; max-width: 220px;
   }
 
   /* ── Skeleton ── */
-  .skeleton-wrap {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
+  .skel-wrap { display: flex; flex-direction: column; gap: 8px; }
+  .skel {
+    border-radius: var(--r-l);
+    background: linear-gradient(90deg, rgba(0,0,0,0.04) 25%, rgba(0,0,0,0.07) 50%, rgba(0,0,0,0.04) 75%);
+    background-size: 300% 100%;
+    animation: skel 1.3s ease-in-out infinite;
+  }
+  @keyframes skel { 0% { background-position: 120% 0; } 100% { background-position: -120% 0; } }
+
+  /* ── Composer (bottom sheet) ── */
+  .composer {
+    position: fixed; z-index: 40;
+    bottom: 0; left: 50%; transform: translateX(-50%);
+    width: min(100vw, 430px);
+    padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+    background: rgba(255,255,255,0.97);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border-top: 1px solid var(--border);
+    box-shadow: 0 -6px 24px rgba(0,0,0,0.06);
   }
 
-  .skeleton-card {
-    height: 80px;
-    border-radius: 16px;
-    border: 1px solid var(--line);
-    background: linear-gradient(100deg,
-      rgba(255,255,255,0.03) 25%,
-      rgba(124,58,237,0.07) 50%,
-      rgba(255,255,255,0.03) 75%);
-    background-size: 240% 100%;
-    animation: shimmer 1.4s ease-in-out infinite;
+  .handle {
+    width: 32px; height: 4px; border-radius: 999px;
+    background: rgba(0,0,0,0.12); margin: 0 auto 14px;
   }
 
-  .skeleton-card:nth-child(2) { height: 96px; }
-  .skeleton-card:nth-child(3) { height: 68px; }
+  /* Tag selector */
+  .tag-row { display: flex; gap: 6px; margin-bottom: 10px; }
 
-  @keyframes shimmer {
-    0%   { background-position: 120% 0; }
-    100% { background-position: -120% 0; }
+  .tag-btn {
+    flex: 1; height: 38px; border-radius: var(--r-s);
+    font-size: 12px; font-weight: 700;
+    color: var(--t2); background: var(--raised);
+    border: 1.5px solid var(--border);
+    min-height: 0; min-width: 0;
+    transition: background 130ms ease, color 130ms ease, border-color 130ms ease;
+  }
+  .tag-btn.on[data-tag="#업무"]    { background: #ede9fe; color: #5b21b6; border-color: rgba(124,58,237,0.28); }
+  .tag-btn.on[data-tag="#아이디어"] { background: #ecfeff; color: #0e7490; border-color: rgba(6,182,212,0.28); }
+  .tag-btn.on[data-tag="#개인"]    { background: #fce7f3; color: #9d174d; border-color: rgba(236,72,153,0.25); }
+
+  /* Textarea composer */
+  .textarea-wrap {
+    position: relative;
+    border-radius: var(--r-m); border: 1.5px solid var(--border);
+    background: var(--raised);
+    transition: border-color 160ms ease, box-shadow 160ms ease;
+  }
+  .textarea-wrap:focus-within {
+    border-color: rgba(91,33,182,0.35);
+    box-shadow: 0 0 0 3px rgba(91,33,182,0.06);
+    background: #fff;
   }
 
-  /* ── Bottom composer ── */
-  .bottom-sheet {
-    position: fixed;
-    z-index: 30;
-    left: 50%;
-    bottom: 0;
-    transform: translateX(-50%);
-    width: min(calc(100vw - 16px), 414px);
-    padding: 14px 14px calc(14px + env(safe-area-inset-bottom));
-    border-radius: 26px 26px 0 0;
-    background: rgba(10,10,18,0.88);
-    border: 1px solid rgba(255,255,255,0.09);
-    border-bottom: 0;
-    backdrop-filter: blur(32px) saturate(1.3);
-    -webkit-backdrop-filter: blur(32px) saturate(1.3);
-    box-shadow:
-      0 -1px 0 rgba(124,58,237,0.12),
-      0 -30px 80px rgba(0,0,0,0.5);
-  }
-
-  /* handle bar */
-  .bottom-sheet::before {
-    content: '';
+  .composer-textarea {
+    width: 100%; min-height: 52px; max-height: 160px;
+    padding: 14px 16px 10px;
+    font-size: 15px; font-weight: 400; line-height: 1.5;
+    color: var(--t1); overflow-y: auto;
+    caret-color: var(--accent);
     display: block;
-    width: 36px;
-    height: 4px;
-    border-radius: 999px;
-    background: rgba(255,255,255,0.15);
-    margin: 0 auto 12px;
+  }
+  .composer-textarea::placeholder { color: var(--t3); }
+
+  .textarea-footer {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 10px 8px;
   }
 
-  /* ── Tag row ── */
-  .chip-row {
-    display: flex;
-    gap: 7px;
-    margin-bottom: 10px;
-    overflow-x: auto;
-    scrollbar-width: none;
+  .char-hint {
+    font-size: 11px; color: var(--t3);
+    font-variant-numeric: tabular-nums;
   }
 
-  .chip-row::-webkit-scrollbar { display: none; }
+  .btn-row { display: flex; align-items: center; gap: 6px; }
 
-  .tag-choice {
-    flex: 1;
-    min-height: 42px;
-    border-radius: 12px;
-    font-size: 12px;
-    font-weight: 700;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(255,255,255,0.055);
-    border: 1px solid var(--line);
-    color: var(--text-muted);
-    transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+  .icon-btn {
+    display: grid; place-items: center;
+    width: 36px; height: 36px;
+    border-radius: var(--r-s);
+    flex-shrink: 0; min-height: 0; min-width: 0;
   }
 
-  .tag-choice[data-tag="#업무"].is-active   { background: rgba(124,58,237,0.2); border-color: rgba(124,58,237,0.38); color: #a78bfa; }
-  .tag-choice[data-tag="#아이디어"].is-active { background: rgba(6,182,212,0.16); border-color: rgba(6,182,212,0.34); color: #22d3ee; }
-  .tag-choice[data-tag="#개인"].is-active   { background: rgba(236,72,153,0.16); border-color: rgba(236,72,153,0.32); color: #f472b6; }
+  .btn-ai {
+    color: var(--accent); background: var(--accent-bg);
+    transition: background 120ms ease, opacity 120ms ease;
+  }
+  .btn-ai:disabled { opacity: 0.3; cursor: default; }
+  .btn-ai.spinning svg { animation: spin 0.7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* ── Composer line ── */
-  .composer-line {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 56px;
-    padding: 5px 5px 5px 16px;
-    border-radius: 16px;
-    background: rgba(255,255,255,0.05);
-    border: 1px solid rgba(255,255,255,0.09);
-    transition: border-color 180ms ease, box-shadow 180ms ease;
+  .btn-clear {
+    color: var(--t3); background: var(--raised);
   }
 
-  .composer-line:focus-within {
-    border-color: rgba(124,58,237,0.4);
-    box-shadow: 0 0 0 3px rgba(124,58,237,0.08), 0 0 20px rgba(124,58,237,0.08);
+  .btn-submit {
+    width: 44px; height: 44px; border-radius: var(--r-m);
+    background: var(--t1); color: #fff;
+    box-shadow: var(--sh1);
+    transition: transform 120ms ease, background 120ms ease;
+  }
+  .btn-submit:active { transform: scale(0.93); background: #333; }
+  .btn-submit:disabled { opacity: 0.25; cursor: default; }
+
+  /* Action controls */
+  .action-ctrl { display: flex; gap: 8px; margin-bottom: 10px; }
+
+  .ctrl {
+    flex: 1; height: 38px;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    border-radius: var(--r-s);
+    font-size: 12px; font-weight: 600;
+    color: var(--t2); background: var(--raised); border: 1.5px solid var(--border);
+    min-height: 0; min-width: 0;
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+  .ctrl.hi-on { background: var(--amber-bg); color: var(--amber); border-color: rgba(217,119,6,0.25); }
+  .ctrl input[type="date"] {
+    font-size: 12px; font-weight: 600; color: var(--t1);
+    color-scheme: light; cursor: pointer; flex: 1; text-align: center;
   }
 
-  .composer-line input {
-    flex: 1;
-    min-width: 0;
-    border: 0;
-    outline: 0;
-    background: transparent;
-    color: var(--text);
-    font-size: 15px;
-    font-weight: 500;
-    caret-color: #a78bfa;
-  }
-
-  .composer-line input::placeholder {
-    color: rgba(255,255,255,0.3);
-  }
-
-  .send-btn {
-    flex-shrink: 0;
-    width: 46px;
-    height: 46px;
-    display: grid;
-    place-items: center;
-    border-radius: 12px;
-    background: linear-gradient(135deg, #7c3aed, #5b21b6);
-    color: #fff;
-    box-shadow: 0 4px 16px rgba(124,58,237,0.35);
-    transition: transform 120ms ease, box-shadow 120ms ease;
-  }
-
-  .send-btn:active {
-    transform: scale(0.93);
-    box-shadow: 0 2px 8px rgba(124,58,237,0.25);
-  }
-
-  .correct-btn {
-    flex-shrink: 0;
-    width: 42px;
-    height: 42px;
-    display: grid;
-    place-items: center;
-    border-radius: 11px;
-    background: rgba(124,58,237,0.1);
-    border: 1px solid rgba(124,58,237,0.22);
-    color: #a78bfa;
-    transition: background 160ms ease;
-  }
-
-  .correct-btn:disabled {
-    opacity: 0.3;
-    cursor: default;
-  }
-
-  .correct-btn:not(:disabled):active {
-    background: rgba(124,58,237,0.2);
-  }
-
-  /* ── Action controls ── */
-  .action-controls {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 8px;
-    margin-bottom: 10px;
-  }
-
-  .date-label {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 44px;
-    padding: 0 14px;
-    border-radius: 12px;
-    background: rgba(255,255,255,0.05);
-    border: 1px solid var(--line);
-    color: var(--text-muted);
-  }
-
-  .date-label input[type="date"] {
-    flex: 1;
-    border: 0;
-    outline: 0;
-    background: transparent;
-    color: var(--text);
-    color-scheme: dark;
-    font-family: 'SF Mono', ui-monospace, monospace;
-    font-size: 12px;
-  }
-
-  .priority-btn {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 0 14px;
-    min-height: 44px;
-    border-radius: 12px;
-    background: rgba(255,255,255,0.05);
-    border: 1px solid var(--line);
-    color: var(--text-muted);
-    font-size: 12px;
-    font-weight: 700;
-    white-space: nowrap;
-    transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
-  }
-
-  .priority-btn.is-high {
-    background: rgba(245,158,11,0.12);
-    border-color: rgba(245,158,11,0.28);
-    color: #fbbf24;
-  }
-
-  /* ── AI row ── */
+  /* AI row */
   .ai-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 10px 2px 0;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; margin-top: 10px;
   }
 
-  .ai-toggle-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    min-height: 32px;
-    padding: 0 12px;
-    border-radius: 999px;
-    background: rgba(255,255,255,0.05);
-    border: 1px solid var(--line);
-    color: var(--text-muted);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.02em;
+  .ai-key-btn {
+    display: flex; align-items: center; gap: 5px;
+    height: 26px; padding: 0 10px; border-radius: 999px;
+    font-size: 11px; font-weight: 700;
+    color: var(--t2); background: var(--raised); border: 1px solid var(--border);
+    min-height: 0; min-width: 0; white-space: nowrap;
   }
 
-  .ai-status-btn {
-    flex: 1;
-    min-height: 32px;
-    min-width: 0;
-    background: transparent;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    text-align: right;
-    color: var(--text-faint);
-    font-size: 11px;
-    font-weight: 600;
+  .ai-msg {
+    font-size: 11px; font-weight: 600; color: var(--t3);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    min-width: 0; background: none; min-height: 0; cursor: pointer;
   }
+  .ai-msg.loading, .ai-msg.success { color: var(--accent); }
+  .ai-msg.error { color: var(--red); }
 
-  .ai-status-btn.loading,
-  .ai-status-btn.success {
-    color: #a78bfa;
-  }
-
-  .ai-status-btn.error {
-    color: rgba(244,63,94,0.9);
-  }
-
-  /* ── AI panel ── */
+  /* AI panel */
   .ai-panel {
-    display: grid;
-    grid-template-columns: 1fr 152px;
-    gap: 8px;
-    overflow: hidden;
-    padding: 10px 2px 0;
+    display: grid; grid-template-columns: 1fr 148px; gap: 8px;
+    overflow: hidden; margin-top: 10px;
   }
-
   .ai-panel input,
   .ai-panel select {
-    min-height: 42px;
-    min-width: 0;
-    border-radius: 12px;
-    border: 1px solid var(--line);
-    outline: 0;
-    background: rgba(255,255,255,0.05);
-    color: var(--text);
-    padding: 0 12px;
-    font-size: 12px;
-    font-weight: 500;
-    transition: border-color 160ms ease;
+    height: 40px; padding: 0 12px;
+    border-radius: var(--r-s); border: 1.5px solid var(--border);
+    background: var(--raised); font-size: 12px; font-weight: 500;
+    color: var(--t1); min-width: 0;
+    transition: border-color 140ms ease;
   }
+  .ai-panel input:focus, .ai-panel select:focus { border-color: rgba(91,33,182,0.3); }
 
-  .ai-panel input:focus,
-  .ai-panel select:focus {
-    border-color: rgba(124,58,237,0.35);
-  }
-
-  .ai-panel select {
-    color-scheme: dark;
-  }
-
-  /* ── Error modal ── */
-  .modal-backdrop {
-    position: fixed;
-    z-index: 80;
-    inset: 0;
-    display: grid;
-    place-items: center;
-    padding: 24px;
-    background: rgba(0,0,0,0.65);
-    backdrop-filter: blur(16px);
-  }
-
-  .error-modal {
-    width: min(100%, 360px);
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 14px;
-    padding: 28px 24px;
-    text-align: center;
-    border-radius: 24px;
-    background: rgba(15,15,22,0.97);
-    border: 1px solid rgba(244,63,94,0.2);
-    box-shadow: 0 32px 100px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.04) inset;
-  }
-
-  .error-icon-wrap {
-    width: 52px;
+  /* ── Toast ── */
+  .toast {
+    position: fixed; z-index: 60;
+    bottom: calc(env(safe-area-inset-bottom) + 16px);
+    left: 50%; transform: translateX(-50%);
+    width: min(calc(100vw - 32px), 380px);
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 0 16px;
     height: 52px;
-    display: grid;
-    place-items: center;
-    border-radius: 16px;
-    background: rgba(244,63,94,0.12);
-    border: 1px solid rgba(244,63,94,0.22);
-    color: #fb7185;
+    border-radius: var(--r-l);
+    background: #1a1a1a; color: #fff;
+    box-shadow: var(--sh3);
+    pointer-events: all;
   }
 
-  .error-modal h2 {
-    margin: 0;
-    font-size: 18px;
-    font-weight: 700;
-    letter-spacing: -0.02em;
+  .toast-msg { font-size: 13px; font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .toast-undo {
+    display: flex; align-items: center; gap: 5px;
+    height: 32px; padding: 0 12px; border-radius: 999px;
+    background: rgba(255,255,255,0.15); color: #fff;
+    font-size: 12px; font-weight: 700;
+    flex-shrink: 0; min-height: 0; min-width: 0;
+    transition: background 120ms ease;
+  }
+  .toast-undo:hover { background: rgba(255,255,255,0.22); }
+
+  /* ── Error toast ── */
+  .err-toast {
+    position: fixed; z-index: 70;
+    top: calc(env(safe-area-inset-top) + 16px);
+    left: 50%; transform: translateX(-50%);
+    width: min(calc(100vw - 32px), 380px);
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 14px 16px;
+    border-radius: var(--r-l);
+    background: var(--surface); color: var(--t1);
+    border: 1px solid rgba(220,38,38,0.18);
+    box-shadow: var(--sh3);
   }
 
-  .error-modal p {
-    margin: 0;
-    color: var(--text-muted);
-    font-size: 14px;
-    line-height: 1.6;
-    overflow-wrap: anywhere;
-  }
+  .err-toast-icon { color: var(--red); flex-shrink: 0; margin-top: 1px; }
+  .err-toast-body { flex: 1; min-width: 0; }
+  .err-toast-title { font-size: 13px; font-weight: 700; margin-bottom: 2px; }
+  .err-toast-msg { font-size: 12px; color: var(--t2); line-height: 1.5; overflow-wrap: anywhere; }
+  .err-toast-model { font-size: 11px; color: var(--t3); margin-top: 4px; font-family: ui-monospace, monospace; }
+  .err-toast-close { color: var(--t3); width: 28px; height: 28px; display: grid; place-items: center; border-radius: var(--r-s); min-height: 0; min-width: 0; flex-shrink: 0; transition: background 100ms ease; }
+  .err-toast-close:hover { background: var(--raised); }
 
-  .error-meta-row {
-    width: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 10px 14px;
-    border-radius: 12px;
-    background: rgba(255,255,255,0.04);
-    border: 1px solid var(--line);
-    font-size: 11px;
-  }
-
-  .error-meta-row span { color: var(--text-muted); }
-  .error-meta-row strong { color: var(--text); font-family: 'SF Mono', monospace; }
-
-  .error-confirm-btn {
-    width: 100%;
-    min-height: 48px;
-    border-radius: 14px;
-    background: linear-gradient(135deg, #7c3aed, #5b21b6);
-    color: #fff;
-    font-size: 14px;
-    font-weight: 700;
-    letter-spacing: -0.01em;
-    box-shadow: 0 8px 24px rgba(124,58,237,0.32);
-    transition: transform 120ms ease;
-  }
-
-  .error-confirm-btn:active {
-    transform: scale(0.97);
-  }
-
-  /* ── Hover states (pointer device) ── */
+  /* ── Hover states ── */
   @media (hover: hover) {
-    .memo-card:hover {
-      background: rgba(255,255,255,0.04);
-    }
-    .action-card:hover {
-      border-color: rgba(124,58,237,0.18);
-    }
+    .copy-btn:hover { background: var(--accent-bg); color: var(--accent); }
+    .memo-card:hover { background: var(--raised); }
+    .action-card:hover { border-color: rgba(91,33,182,0.14); }
+    .tag-btn:hover:not(.on) { background: rgba(0,0,0,0.07); }
+    .ctrl:hover:not(.hi-on) { background: rgba(0,0,0,0.06); }
   }
 
-  /* ── Portrait tablet ── */
-  @media (min-width: 700px) and (orientation: portrait) {
-    .phone-frame,
-    .top-chrome,
-    .scroll-stage {
-      width: min(calc(100vw - 40px), 720px);
-    }
-
-    .bottom-sheet {
-      width: min(calc(100vw - 64px), 680px);
-    }
-
-    .header-inner {
-      max-width: 720px;
-    }
-
-    .scroll-stage {
-      padding: 190px 24px 252px;
-    }
-  }
-
-  /* ── Landscape compact ── */
+  /* ── Landscape narrow ── */
   @media (min-width: 640px) and (max-height: 540px) and (orientation: landscape) {
-    .app-shell { align-items: stretch; }
-
-    .phone-frame {
+    .frame {
       width: 100vw;
-      min-height: 100dvh;
       display: grid;
-      grid-template-columns: 260px minmax(0, 1fr);
-      grid-template-rows: auto minmax(0, 1fr);
-      grid-template-areas: "nav content" "composer content";
-      border: 0;
+      grid-template-columns: 240px 1fr;
+      grid-template-areas: "hdr stage" "composer stage";
     }
-
-    .top-chrome {
-      grid-area: nav;
-      position: relative;
-      top: auto; left: auto; transform: none;
-      width: auto;
-      padding: max(12px, env(safe-area-inset-top)) 0 12px;
-      border-right: 1px solid var(--line);
-      border-bottom: 0;
+    .hdr {
+      grid-area: hdr;
+      position: relative; top: auto; left: auto; transform: none; width: auto;
+      border-right: 1px solid var(--border); border-bottom: none;
     }
-
-    .scroll-stage {
-      grid-area: content;
-      width: 100%;
-      height: 100dvh;
-      padding: 14px;
-    }
-
-    .bottom-sheet {
+    .stage { grid-area: stage; width: 100%; height: 100dvh; padding: 12px; }
+    .composer {
       grid-area: composer;
-      position: relative;
-      left: auto; bottom: auto; transform: none;
-      width: auto; height: 100%;
-      padding: 14px 14px max(14px, env(safe-area-inset-bottom));
-      border-radius: 0;
-      border-left: 0;
-      border-right: 1px solid var(--line);
-      border-top: 0;
-      box-shadow: none;
+      position: relative; bottom: auto; left: auto; transform: none;
+      width: auto; border-top: 1px solid var(--border);
+      border-right: 1px solid var(--border); box-shadow: none;
+      background: #fff;
     }
-
-    .bottom-sheet::before { display: none; }
-
-    .chip-row { flex-wrap: wrap; overflow: visible; }
-    .tag-choice { flex: 1 1 calc(50% - 7px); }
-    .ai-row { flex-direction: column; align-items: stretch; gap: 4px; }
-    .ai-status-btn { text-align: left; }
+    .handle { display: none; }
+    .tag-row { flex-wrap: wrap; }
+    .tag-btn { flex: 1 1 calc(50% - 3px); }
     .ai-panel { grid-template-columns: 1fr; }
   }
 
   /* ── Landscape desktop ── */
   @media (min-width: 900px) and (orientation: landscape) {
-    .app-shell { align-items: center; padding: 24px; }
-
-    .phone-frame {
-      width: min(calc(100vw - 48px), 1200px);
-      min-height: min(860px, calc(100dvh - 48px));
-      height: min(860px, calc(100dvh - 48px));
+    .app { align-items: center; padding: 28px; }
+    .frame {
+      width: min(calc(100vw - 56px), 1180px);
+      height: min(840px, calc(100dvh - 56px));
+      min-height: 0;
+      border-radius: 24px; border: 1px solid var(--border-2);
+      box-shadow: var(--sh3); background: var(--bg); overflow: hidden;
       display: grid;
-      grid-template-columns: minmax(250px, 0.72fr) minmax(360px, 1.4fr) minmax(320px, 0.88fr);
-      grid-template-areas: "nav content composer";
-      border: 1px solid rgba(255,255,255,0.07);
-      border-radius: 24px;
-      background: rgba(10,10,18,0.3);
-      box-shadow: 0 40px 120px rgba(0,0,0,0.5);
+      grid-template-columns: 256px 1fr 316px;
+      grid-template-areas: "hdr stage composer";
     }
-
-    .top-chrome {
-      grid-area: nav;
-      height: 100%;
-      border-right: 1px solid var(--line);
-      border-bottom: 0;
-      overflow-y: auto;
+    .hdr {
+      grid-area: hdr;
+      position: relative; top: auto; left: auto; transform: none;
+      width: auto; height: 100%;
+      border-right: 1px solid var(--border); border-bottom: none;
       border-radius: 24px 0 0 24px;
+      background: var(--bg);
     }
-
-    .header-inner {
-      height: 100%;
-      justify-content: flex-start;
-      gap: 18px;
-      padding: 20px 18px;
+    .hdr-body { height: 100%; padding: 22px 18px; }
+    .stage {
+      grid-area: stage;
+      width: 100%; height: 100%; padding: 22px 20px;
     }
-
-    .scroll-stage {
-      width: 100%;
-      height: 100%;
-      padding: 20px;
+    .memo-group, .action-list, .skel-wrap { max-width: 540px; margin-left: auto; margin-right: auto; }
+    .composer {
+      grid-area: composer;
+      position: relative; bottom: auto; left: auto; transform: none;
+      width: auto; height: 100%;
+      border-top: none; border-left: 1px solid var(--border);
+      border-radius: 0 24px 24px 0; box-shadow: none;
+      background: #fff; padding: 22px 18px;
     }
-
-    .memo-list, .action-list, .skeleton-wrap {
-      max-width: 600px;
-      margin: 0 auto;
-    }
-
-    .bottom-sheet {
-      height: 100%;
-      border-left: 1px solid var(--line);
-      border-right: 0;
-      border-top: 0;
-      padding: 20px 18px;
-      border-radius: 0 24px 24px 0;
-      box-shadow: none;
-    }
-
-    .bottom-sheet::before { display: none; }
-    .action-controls { grid-template-columns: 1fr; }
+    .handle { display: none; }
+    .action-ctrl { flex-direction: column; }
+    .ai-panel { grid-template-columns: 1fr; }
   }
 
-  @media (min-width: 1200px) and (orientation: landscape) {
-    .phone-frame {
-      grid-template-columns: 280px minmax(420px, 1fr) 360px;
-    }
+  @media (min-width: 1180px) and (orientation: landscape) {
+    .frame { grid-template-columns: 276px 1fr 340px; }
   }
-
-  /* ── min-width: 44px ── */
-  .flex-1 { flex: 1 1 0%; }
-  .min-w-0 { min-width: 0; }
 `;
 
-// ─── Components ─────────────────────────────────────────────────────────────
+// ─── Sub-components ───────────────────────────────────────────────────────────
 
-function ErrorModal({ error, onClose }) {
-  if (!error) return null;
+function TagBadge({ tag }) {
+  const s = TAG_STYLES[tag] ?? { bg: "#f3f4f6", color: "#6b7280", dot: "#9ca3af" };
   return (
-    <motion.div
-      className="modal-backdrop"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-    >
-      <motion.div
-        className="error-modal"
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="err-title"
-        initial={{ y: 28, opacity: 0, scale: 0.95 }}
-        animate={{ y: 0, opacity: 1, scale: 1 }}
-        exit={{ y: 20, opacity: 0, scale: 0.97 }}
-        transition={{ type: "spring", stiffness: 340, damping: 28 }}
-      >
-        <div className="error-icon-wrap">
-          <Sparkles size={22} />
-        </div>
-        <h2 id="err-title">AI 교정 실패</h2>
-        <p>{error.message}</p>
-        <div className="error-meta-row">
-          <span>마지막 모델</span>
-          <strong>{error.model}</strong>
-        </div>
-        <button type="button" className="error-confirm-btn" onClick={onClose}>
-          확인
-        </button>
-      </motion.div>
-    </motion.div>
+    <span className="tag-badge" style={{ background: s.bg, color: s.color }}>
+      <span className="tag-badge-dot" style={{ background: s.dot }} />
+      {tag}
+    </span>
   );
 }
 
-function TopChrome({ activeView, setActiveView, actionFilter, setActionFilter, compact }) {
+function Header({ activeView, setActiveView, actionFilter, setActionFilter, compact }) {
   return (
-    <header className={`top-chrome${compact ? " is-compact" : ""}`}>
-      <div className="header-inner">
-        <div className="header-row">
-          <div className="brand-block">
-            <span className="brand-eyebrow">IntelliMemo</span>
-            <h1 className="brand-title">인텔리메모</h1>
+    <header className={`hdr${compact ? " compact" : ""}`}>
+      <div className="hdr-body">
+        <div className="hdr-top">
+          <div className="brand">
+            <h1>인텔리메모</h1>
+            <p>IntelliMemo</p>
           </div>
-          <motion.div
-            className="ai-orb"
-            animate={{ scale: compact ? 0.9 : 1 }}
-            transition={{ type: "spring", stiffness: 260, damping: 22 }}
-          >
-            <Zap size={18} />
-          </motion.div>
+          <span className="gemini-badge">
+            <Sparkles size={11} />
+            Gemini AI
+          </span>
         </div>
 
-        <div className="mode-tabs" role="tablist" aria-label="보기 전환">
+        <div className="seg" role="tablist">
           <motion.div
-            className="mode-indicator"
+            className="seg-thumb"
             animate={{ x: activeView === "memos" ? 0 : "100%" }}
-            transition={{ type: "spring", stiffness: 400, damping: 34 }}
+            transition={{ type: "spring", stiffness: 440, damping: 38 }}
           />
           <button
             type="button"
-            className={activeView === "memos" ? "is-active" : ""}
+            className={activeView === "memos" ? "on" : ""}
             onClick={() => setActiveView("memos")}
             role="tab"
             aria-selected={activeView === "memos"}
           >
-            <MessageSquareText size={16} />
+            <MessageSquareText size={14} />
             메모
           </button>
           <button
             type="button"
-            className={activeView === "actions" ? "is-active" : ""}
+            className={activeView === "actions" ? "on" : ""}
             onClick={() => setActiveView("actions")}
             role="tab"
             aria-selected={activeView === "actions"}
           >
-            <Check size={16} />
+            <CheckCircle2 size={14} />
             액션
           </button>
         </div>
@@ -1458,18 +922,18 @@ function TopChrome({ activeView, setActiveView, actionFilter, setActionFilter, c
         <AnimatePresence initial={false}>
           {activeView === "actions" && (
             <motion.div
-              className="filter-tabs"
-              initial={{ y: -10, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              exit={{ y: -10, opacity: 0 }}
-              transition={{ duration: 0.16 }}
+              className="filter-bar"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.15 }}
             >
-              <ListFilter size={14} className="filter-tabs-icon" />
+              <ListFilter size={13} />
               {ACTION_FILTERS.map((f) => (
                 <button
                   key={f.key}
                   type="button"
-                  className={actionFilter === f.key ? "is-active" : ""}
+                  className={`f-chip${actionFilter === f.key ? " on" : ""}`}
                   onClick={() => setActionFilter(f.key)}
                 >
                   {f.label}
@@ -1485,9 +949,9 @@ function TopChrome({ activeView, setActiveView, actionFilter, setActionFilter, c
 
 function SkeletonList() {
   return (
-    <div className="skeleton-wrap">
-      {Array.from({ length: 5 }).map((_, i) => (
-        <div className="skeleton-card" key={i} />
+    <div className="skel-wrap">
+      {[82, 104, 68, 94, 76].map((h, i) => (
+        <div key={i} className="skel" style={{ height: h }} />
       ))}
     </div>
   );
@@ -1496,186 +960,182 @@ function SkeletonList() {
 function EmptyState({ type }) {
   return (
     <motion.div
-      className="empty-state"
-      initial={{ y: 20, opacity: 0 }}
-      animate={{ y: 0, opacity: 1 }}
-      transition={{ type: "spring", stiffness: 240, damping: 24 }}
+      className="empty"
+      initial={{ opacity: 0, y: 16 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ type: "spring", stiffness: 260, damping: 26 }}
     >
-      <div className="empty-icon-wrap">
-        <Sparkles size={24} />
+      <div className="empty-icon">
+        <Sparkles size={22} />
       </div>
-      <p className="empty-label">
-        {type === "memos"
-          ? "머릿속 생각을 여기 내려놓으세요 ☁️"
-          : "할 일들이 아직 줄 서기 전이에요"}
-      </p>
+      <p>{type === "memos" ? "생각이 떠오르면 바로 기록하세요" : "할 일을 추가해 보세요"}</p>
     </motion.div>
   );
 }
 
-function TagChip({ tag }) {
-  const colors = TAG_COLORS[tag] ?? { bg: "rgba(255,255,255,0.08)", border: "rgba(255,255,255,0.12)", text: "rgba(255,255,255,0.68)" };
-  return (
-    <span
-      className="tag-chip"
-      style={{ background: colors.bg, border: `1px solid ${colors.border}`, color: colors.text }}
-    >
-      {tag}
-    </span>
-  );
-}
-
 function MemoCard({ memo, index, tick, onDelete, onEdit }) {
-  const [isEditing, setIsEditing] = useState(false);
-  const [draft, setDraft] = useState(memo.text);
-  const [isCopied, setIsCopied] = useState(false);
-  const inputRef = useRef(null);
+  const [editing,   setEditing]   = useState(false);
+  const [draft,     setDraft]     = useState(memo.text);
+  const [copied,    setCopied]    = useState(false);
+  const [expanded,  setExpanded]  = useState(false);
+  const editorRef = useRef(null);
 
-  useEffect(() => {
-    if (isEditing) inputRef.current?.focus();
-  }, [isEditing]);
+  const isLong = memo.text.split("\n").length > 4 || memo.text.length > 200;
 
-  useEffect(() => {
-    if (!isEditing) setDraft(memo.text);
-  }, [isEditing, memo.text]);
+  useEffect(() => { if (editing) editorRef.current?.focus(); }, [editing]);
+  useEffect(() => { if (!editing) setDraft(memo.text); }, [editing, memo.text]);
 
-  const finishEdit = () => {
-    const next = draft.trim();
-    if (next) onEdit(memo.id, next);
-    setIsEditing(false);
+  const commit = () => {
+    const t = draft.trim();
+    if (t) onEdit(memo.id, t);
+    setEditing(false);
   };
 
   const handleCopy = async (e) => {
     e.stopPropagation();
     try {
       await copyToClipboard(memo.text);
-      setIsCopied(true);
-      setTimeout(() => setIsCopied(false), 1400);
-    } catch {
-      setIsCopied(false);
-    }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
+    } catch {}
   };
 
   return (
-    <motion.div className="swipe-shell">
-      <div className="delete-reveal">
-        <Trash2 size={18} />
-      </div>
+    <motion.div className="swipe-wrap">
+      <div className="swipe-bg"><Trash2 size={15} /></div>
       <motion.article
-        layout
+        layout="position"
         drag="x"
-        dragConstraints={{ left: -112, right: 0 }}
-        dragElastic={0.07}
+        dragConstraints={{ left: -108, right: 0 }}
+        dragElastic={0.055}
         onDragEnd={(_, info) => {
-          if (info.offset.x < -82 || info.velocity.x < -560) onDelete(memo.id);
+          if (info.offset.x < -80 || info.velocity.x < -480) onDelete(memo.id);
         }}
-        onTap={() => !isEditing && setIsEditing(true)}
-        initial={{ y: 36, opacity: 0 }}
-        animate={{ y: 0, opacity: 1 }}
-        exit={{ x: -110, opacity: 0 }}
-        whileTap={{ scale: 0.985 }}
-        transition={{ type: "spring", stiffness: 300, damping: 26, delay: index * 0.022 }}
+        onTap={() => !editing && setEditing(true)}
+        initial={{ opacity: 0, y: 18 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, x: -80 }}
+        whileTap={{ scale: 0.992 }}
+        transition={{ type: "spring", stiffness: 300, damping: 28, delay: index * 0.018 }}
         className="memo-card"
+        style={{ display: "block" }}
       >
-        <div className="memo-header">
+        <div className="memo-top">
           <div className="memo-meta">
-            <TagChip tag={memo.tag} />
+            <TagBadge tag={memo.tag} />
             <time className="memo-time">{relativeTime(memo.createdAt, tick)}</time>
           </div>
           <button
             type="button"
-            className={`memo-copy${isCopied ? " is-copied" : ""}`}
+            className={`copy-btn${copied ? " copied" : ""}`}
             onPointerDown={(e) => e.stopPropagation()}
             onClick={handleCopy}
-            aria-label={isCopied ? "복사됨" : "메모 복사"}
+            aria-label={copied ? "복사됨" : "메모 복사"}
           >
-            {isCopied ? <Check size={14} /> : <Copy size={14} />}
+            {copied ? <Check size={12} /> : <Copy size={12} />}
           </button>
         </div>
-        {isEditing ? (
-          <textarea
-            ref={inputRef}
-            className="memo-edit"
-            value={draft}
-            rows={Math.min(6, Math.max(3, draft.split("\n").length + 1))}
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={finishEdit}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) finishEdit();
-              if (e.key === "Escape") setIsEditing(false);
-            }}
-          />
+
+        {editing ? (
+          <>
+            <textarea
+              ref={editorRef}
+              className="memo-editor"
+              value={draft}
+              rows={Math.min(8, Math.max(3, draft.split("\n").length + 1))}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={commit}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) commit();
+                if (e.key === "Escape") setEditing(false);
+              }}
+            />
+            <p className="save-hint">⌘ Enter로 저장</p>
+          </>
         ) : (
-          <p className="memo-body">{memo.text}</p>
+          <>
+            <p className={`memo-body${isLong && !expanded ? " truncated" : ""}`}>
+              {memo.text}
+            </p>
+            {isLong && !editing && (
+              <button
+                type="button"
+                className="expand-btn"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}
+              >
+                {expanded ? "접기" : "더 보기"}
+              </button>
+            )}
+          </>
         )}
       </motion.article>
     </motion.div>
   );
 }
 
-function CheckMark({ done }) {
+function Checkbox({ checked }) {
   return (
     <motion.span
-      className={`check-wrap${done ? " is-done" : ""}`}
-      animate={done ? { scale: [1, 1.18, 1] } : { scale: 1 }}
-      transition={{ duration: 0.32 }}
+      className={`chk${checked ? " checked" : ""}`}
+      animate={checked ? { scale: [1, 1.18, 1] } : { scale: 1 }}
+      transition={{ duration: 0.26 }}
     >
-      {done ? (
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      {checked && (
+        <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">
           <motion.path
-            d="M5 12.5l4.2 4.1L19 7"
-            stroke="currentColor"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
+            d="M2 7l3.5 3.5L12 3"
+            stroke="currentColor" strokeWidth="2.2"
+            strokeLinecap="round" strokeLinejoin="round"
             initial={{ pathLength: 0 }}
             animate={{ pathLength: 1 }}
-            transition={{ duration: 0.28, ease: "easeOut" }}
+            transition={{ duration: 0.22, ease: "easeOut" }}
           />
         </svg>
-      ) : (
-        <Circle size={20} strokeWidth={1.8} />
       )}
     </motion.span>
   );
 }
 
 function ActionCard({ action, index, onToggle, onDelete }) {
-  const pastDue = isPastDue(action.dueDate, action.done);
+  const overdue = isPastDue(action.dueDate, action.done);
+  const isHigh  = action.priority === "high";
 
   return (
-    <motion.div className="swipe-shell" style={{ borderRadius: 16 }}>
-      <div className="delete-reveal" style={{ borderRadius: 16 }}>
-        <Trash2 size={18} />
+    <motion.div className="swipe-wrap" style={{ borderRadius: 20 }}>
+      <div className="swipe-bg" style={{ borderRadius: 20 }}>
+        <Trash2 size={15} />
       </div>
       <motion.article
-        layout
+        layout="position"
         drag="x"
-        dragConstraints={{ left: -112, right: 0 }}
-        dragElastic={0.07}
+        dragConstraints={{ left: -108, right: 0 }}
+        dragElastic={0.055}
         onDragEnd={(_, info) => {
-          if (info.offset.x < -82 || info.velocity.x < -560) onDelete(action.id);
+          if (info.offset.x < -80 || info.velocity.x < -480) onDelete(action.id);
         }}
         onTap={() => onToggle(action.id)}
-        initial={{ y: 36, opacity: 0 }}
-        animate={{ y: 0, opacity: 1 }}
-        exit={{ x: -110, opacity: 0 }}
-        whileTap={{ scale: 0.985 }}
-        transition={{ type: "spring", stiffness: 300, damping: 26, delay: index * 0.022 }}
-        className={`action-card${action.done ? " is-done" : ""}${action.priority === "high" ? " is-high" : ""}`}
+        initial={{ opacity: 0, y: 18 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, x: -80 }}
+        whileTap={{ scale: 0.992 }}
+        transition={{ type: "spring", stiffness: 300, damping: 28, delay: index * 0.018 }}
+        className={`action-card${action.done ? " done" : ""}${isHigh ? " hi" : ""}`}
       >
-        <CheckMark done={action.done} />
-        <div className="flex-1 min-w-0">
+        <Checkbox checked={action.done} />
+        <div className="action-body">
           <p className="action-text">{action.text}</p>
           <div className="action-meta">
-            <span className={`meta-tag${pastDue ? " is-past" : ""}`}>
+            <span className={`m-chip${overdue ? " overdue" : ""}`}>
               <CalendarDays size={11} />
-              {formatDueDate(action.dueDate)}
+              {formatDue(action.dueDate)}
             </span>
-            <span className={`priority-pill${action.priority === "high" ? " is-high" : ""}`}>
-              {action.priority === "high" && <Flame size={11} />}
-              {action.priority === "high" ? "높음" : "보통"}
-            </span>
+            {isHigh && (
+              <span className="m-chip hi-pill">
+                <Flame size={11} />
+                높음
+              </span>
+            )}
           </div>
         </div>
       </motion.article>
@@ -1683,44 +1143,67 @@ function ActionCard({ action, index, onToggle, onDelete }) {
   );
 }
 
-function StatsBar({ memos, actions, activeView }) {
+function ActionProgress({ actions }) {
+  if (actions.length === 0) return null;
   const done = actions.filter((a) => a.done).length;
-  const active = actions.filter((a) => !a.done).length;
-
-  if (activeView === "memos") {
-    return (
-      <div className="stats-bar">
-        <div className="stat-chip violet">
-          <span className="stat-dot" />
-          메모 {memos.length}개
-        </div>
-        {memos.filter((m) => m.tag === "#업무").length > 0 && (
-          <div className="stat-chip cyan">
-            <span className="stat-dot" />
-            업무 {memos.filter((m) => m.tag === "#업무").length}
-          </div>
-        )}
-      </div>
-    );
-  }
+  const pct  = Math.round((done / actions.length) * 100);
 
   return (
-    <div className="stats-bar">
-      <div className="stat-chip violet">
-        <span className="stat-dot" />
-        진행 {active}개
+    <div className="progress-bar-wrap">
+      <div className="progress-header">
+        <span className="progress-label">{done}/{actions.length} 완료</span>
+        <span className="progress-pct">{pct}%</span>
       </div>
-      {done > 0 && (
-        <div className="stat-chip cyan">
-          <span className="stat-dot" />
-          완료 {done}개
-        </div>
-      )}
+      <div className="progress-track">
+        <div className="progress-fill" style={{ width: `${pct}%` }} />
+      </div>
     </div>
   );
 }
 
-function BottomComposer({
+function TagFilterStrip({ selected, onChange, tags }) {
+  return (
+    <div className="tag-filter-strip">
+      <button
+        type="button"
+        data-tag="all"
+        className={`tf-chip${selected === "all" ? " on" : ""}`}
+        onClick={() => onChange("all")}
+      >
+        전체
+      </button>
+      {tags.map((tag) => {
+        const s = TAG_STYLES[tag];
+        return (
+          <button
+            key={tag}
+            type="button"
+            data-tag={tag}
+            className={`tf-chip${selected === tag ? " on" : ""}`}
+            onClick={() => onChange(tag)}
+          >
+            {selected !== tag && s && (
+              <span className="tf-chip-dot" style={{ background: s.dot }} />
+            )}
+            {tag}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Auto-resizing textarea helper
+function useAutoResize(ref, value) {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [ref, value]);
+}
+
+function Composer({
   activeView,
   memoText, setMemoText,
   selectedTag, setSelectedTag,
@@ -1733,90 +1216,130 @@ function BottomComposer({
   aiStatus,
   onCorrectDraft,
 }) {
-  const inputRef = useRef(null);
-  const [isAiOpen, setIsAiOpen] = useState(false);
-  const draftText = activeView === "memos" ? memoText : actionText;
-  const isCorrecting = aiStatus.state === "loading";
+  const memoRef   = useRef(null);
+  const actionRef = useRef(null);
+  const [aiOpen, setAiOpen] = useState(false);
+
+  const correcting = aiStatus.state === "loading";
+  const draftText  = activeView === "memos" ? memoText : actionText;
+  const hasText    = draftText.trim().length > 0;
+
+  useAutoResize(memoRef,   memoText);
+  useAutoResize(actionRef, actionText);
 
   useEffect(() => {
-    if (aiStatus.state === "error") setIsAiOpen(true);
+    if (aiStatus.state === "error") setAiOpen(true);
   }, [aiStatus.state]);
 
+  // Focus input on view switch
   useEffect(() => {
-    inputRef.current?.focus({ preventScroll: true });
+    const ref = activeView === "memos" ? memoRef : actionRef;
+    ref.current?.focus({ preventScroll: true });
   }, [activeView]);
+
+  const clearDraft = () => {
+    if (activeView === "memos") setMemoText("");
+    else setActionText("");
+  };
 
   return (
     <motion.form
-      className="bottom-sheet"
+      className="composer"
       onSubmit={(e) => {
         e.preventDefault();
         activeView === "memos" ? onAddMemo() : onAddAction();
       }}
-      initial={{ y: 120, opacity: 0.9 }}
-      animate={{ y: 0, opacity: 1 }}
-      transition={{ type: "spring", stiffness: 300, damping: 30 }}
+      initial={{ y: 100 }}
+      animate={{ y: 0 }}
+      transition={{ type: "spring", stiffness: 320, damping: 32 }}
     >
+      <div className="handle" />
+
       <AnimatePresence mode="wait" initial={false}>
         {activeView === "memos" ? (
           <motion.div
-            key="memo-composer"
-            initial={{ y: 16, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={{ y: -16, opacity: 0 }}
-            transition={{ duration: 0.16 }}
+            key="memo"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.13 }}
           >
-            <div className="chip-row">
+            <div className="tag-row">
               {TAGS.map((tag) => (
                 <button
                   key={tag}
                   type="button"
                   data-tag={tag}
-                  className={`tag-choice${selectedTag === tag ? " is-active" : ""}`}
+                  className={`tag-btn${selectedTag === tag ? " on" : ""}`}
                   onClick={() => setSelectedTag(tag)}
                 >
                   {tag}
                 </button>
               ))}
             </div>
-            <div className="composer-line">
-              <input
-                ref={inputRef}
+            <div className="textarea-wrap">
+              <textarea
+                ref={memoRef}
+                className="composer-textarea"
                 value={memoText}
+                rows={1}
                 onChange={(e) => setMemoText(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
                     e.preventDefault();
                     onAddMemo();
                   }
                 }}
-                placeholder="빠르게 메모"
+                placeholder="생각을 빠르게 메모하세요…"
               />
-              <button
-                type="button"
-                className="correct-btn"
-                disabled={!draftText.trim() || isCorrecting}
-                onClick={() => onCorrectDraft(activeView, () => setIsAiOpen(true))}
-                aria-label="AI 한국어 교정"
-              >
-                <Sparkles size={16} />
-              </button>
-              <button type="submit" className="send-btn" aria-label="메모 추가">
-                <Send size={17} />
-              </button>
+              <div className="textarea-footer">
+                <span className="char-hint">
+                  {memoText.length > 0 ? `${memoText.length}자 · ⌘↵ 저장` : "⌘↵ 저장"}
+                </span>
+                <div className="btn-row">
+                  {hasText && (
+                    <button
+                      type="button"
+                      className="icon-btn btn-clear"
+                      onClick={clearDraft}
+                      aria-label="지우기"
+                    >
+                      <X size={15} />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className={`icon-btn btn-ai${correcting ? " spinning" : ""}`}
+                    disabled={!hasText || correcting}
+                    onClick={() => onCorrectDraft(activeView, () => setAiOpen(true))}
+                    aria-label="AI 교정"
+                    title="AI 한국어 교정"
+                  >
+                    <Sparkles size={16} />
+                  </button>
+                  <button
+                    type="submit"
+                    className="icon-btn btn-submit"
+                    disabled={!hasText}
+                    aria-label="메모 추가"
+                  >
+                    <Send size={16} />
+                  </button>
+                </div>
+              </div>
             </div>
           </motion.div>
         ) : (
           <motion.div
-            key="action-composer"
-            initial={{ y: 16, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={{ y: -16, opacity: 0 }}
-            transition={{ duration: 0.16 }}
+            key="action"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.13 }}
           >
-            <div className="action-controls">
-              <label className="date-label">
-                <CalendarDays size={15} />
+            <div className="action-ctrl">
+              <label className="ctrl" style={{ cursor: "pointer" }}>
+                <CalendarDays size={14} />
                 <input
                   type="date"
                   value={actionDueDate}
@@ -1825,38 +1348,63 @@ function BottomComposer({
               </label>
               <button
                 type="button"
-                className={`priority-btn${actionPriority === "high" ? " is-high" : ""}`}
+                className={`ctrl${actionPriority === "high" ? " hi-on" : ""}`}
                 onClick={() => setActionPriority((v) => (v === "high" ? "normal" : "high"))}
               >
                 <Flame size={14} />
                 {actionPriority === "high" ? "높음" : "보통"}
               </button>
             </div>
-            <div className="composer-line">
-              <input
-                ref={inputRef}
+            <div className="textarea-wrap">
+              <textarea
+                ref={actionRef}
+                className="composer-textarea"
                 value={actionText}
+                rows={1}
                 onChange={(e) => setActionText(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
                     e.preventDefault();
                     onAddAction();
                   }
                 }}
-                placeholder="다음 액션"
+                placeholder="다음 할 일을 입력하세요…"
               />
-              <button
-                type="button"
-                className="correct-btn"
-                disabled={!draftText.trim() || isCorrecting}
-                onClick={() => onCorrectDraft(activeView, () => setIsAiOpen(true))}
-                aria-label="AI 한국어 교정"
-              >
-                <Sparkles size={16} />
-              </button>
-              <button type="submit" className="send-btn" aria-label="액션 추가">
-                <Plus size={18} />
-              </button>
+              <div className="textarea-footer">
+                <span className="char-hint">
+                  {actionText.length > 0 ? `${actionText.length}자 · ⌘↵ 추가` : "⌘↵ 추가"}
+                </span>
+                <div className="btn-row">
+                  {hasText && (
+                    <button
+                      type="button"
+                      className="icon-btn btn-clear"
+                      onClick={clearDraft}
+                      aria-label="지우기"
+                    >
+                      <X size={15} />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className={`icon-btn btn-ai${correcting ? " spinning" : ""}`}
+                    disabled={!hasText || correcting}
+                    onClick={() => onCorrectDraft(activeView, () => setAiOpen(true))}
+                    aria-label="AI 교정"
+                    title="AI 한국어 교정"
+                  >
+                    <Sparkles size={16} />
+                  </button>
+                  <button
+                    type="submit"
+                    className="icon-btn btn-submit"
+                    disabled={!hasText}
+                    aria-label="액션 추가"
+                  >
+                    <Plus size={17} />
+                  </button>
+                </div>
+              </div>
             </div>
           </motion.div>
         )}
@@ -1865,51 +1413,45 @@ function BottomComposer({
       <div className="ai-row">
         <button
           type="button"
-          className="ai-toggle-btn"
-          onClick={() => setIsAiOpen((v) => !v)}
+          className="ai-key-btn"
+          onClick={() => setAiOpen((v) => !v)}
         >
-          <KeyRound size={13} />
+          <KeyRound size={12} />
           {aiSettings.apiKey ? "AI 설정됨" : "AI 설정"}
         </button>
         <button
           type="button"
-          className={`ai-status-btn ${aiStatus.state}`}
+          className={`ai-msg ${aiStatus.state}`}
+          onClick={() => setAiOpen(true)}
           title={aiStatus.message}
-          onClick={() => setIsAiOpen(true)}
         >
           {aiStatus.message}
         </button>
       </div>
 
       <AnimatePresence initial={false}>
-        {isAiOpen && (
+        {aiOpen && (
           <motion.div
             className="ai-panel"
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.18 }}
+            transition={{ duration: 0.15 }}
           >
             <input
               type="password"
               value={aiSettings.apiKey}
-              onChange={(e) =>
-                setAiSettings((s) => ({ ...s, apiKey: e.target.value.trim() }))
-              }
+              onChange={(e) => setAiSettings((s) => ({ ...s, apiKey: e.target.value.trim() }))}
               placeholder="Gemini API key"
               aria-label="Gemini API key"
             />
             <select
               value={aiSettings.model}
-              onChange={(e) =>
-                setAiSettings((s) => ({ ...s, model: e.target.value }))
-              }
+              onChange={(e) => setAiSettings((s) => ({ ...s, model: e.target.value }))}
               aria-label="AI 모델"
             >
               {AI_MODELS.map((m) => (
-                <option key={m.key} value={m.key}>
-                  {m.label}
-                </option>
+                <option key={m.key} value={m.key}>{m.label}</option>
               ))}
             </select>
           </motion.div>
@@ -1919,84 +1461,149 @@ function BottomComposer({
   );
 }
 
-// ─── Main App ────────────────────────────────────────────────────────────────
+// Undo toast
+function UndoToast({ msg, onUndo, onDismiss }) {
+  return (
+    <motion.div
+      className="toast"
+      initial={{ opacity: 0, y: 20, scale: 0.97 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: 10, scale: 0.98 }}
+      transition={{ type: "spring", stiffness: 380, damping: 32 }}
+    >
+      <span className="toast-msg">{msg}</span>
+      <button type="button" className="toast-undo" onClick={onUndo}>
+        <RotateCcw size={12} />
+        되돌리기
+      </button>
+    </motion.div>
+  );
+}
+
+// Error toast (replaces modal)
+function ErrorToast({ error, onClose }) {
+  return (
+    <motion.div
+      className="err-toast"
+      initial={{ opacity: 0, y: -16, scale: 0.97 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: -10, scale: 0.98 }}
+      transition={{ type: "spring", stiffness: 380, damping: 30 }}
+    >
+      <Sparkles size={16} className="err-toast-icon" />
+      <div className="err-toast-body">
+        <p className="err-toast-title">AI 교정 실패</p>
+        <p className="err-toast-msg">{error.message}</p>
+        <p className="err-toast-model">{error.model}</p>
+      </div>
+      <button type="button" className="err-toast-close" onClick={onClose} aria-label="닫기">
+        <X size={14} />
+      </button>
+    </motion.div>
+  );
+}
+
+// ─── Main ────────────────────────────────────────────────────────────────────
 
 export default function IntelliMemoApp() {
-  const [activeView, setActiveView] = useState("memos");
-  const [memos, setMemos] = useState([]);
-  const [actions, setActions] = useState([]);
-  const [memoText, setMemoText] = useState("");
-  const [selectedTag, setSelectedTag] = useState(TAGS[0]);
-  const [actionText, setActionText] = useState("");
-  const [actionDueDate, setActionDueDate] = useState("");
+  const [activeView,     setActiveView]     = useState("memos");
+  const [memos,          setMemos]          = useState([]);
+  const [actions,        setActions]        = useState([]);
+  const [memoText,       setMemoText]       = useState("");
+  const [selectedTag,    setSelectedTag]    = useState(DEFAULT_TAG);
+  const [actionText,     setActionText]     = useState("");
+  const [actionDueDate,  setActionDueDate]  = useState("");
   const [actionPriority, setActionPriority] = useState("normal");
-  const [actionFilter, setActionFilter] = useState("all");
-  const [aiSettings, setAiSettings] = useState({ apiKey: "", model: DEFAULT_AI_MODEL });
-  const [aiStatus, setAiStatus] = useState({
-    state: "idle",
-    message: `Gemini 교정: ${DEFAULT_AI_MODEL}`,
-  });
-  const [correctionError, setCorrectionError] = useState(null);
-  const [isLoaded, setIsLoaded] = useState(false);
-  const [scrollTop, setScrollTop] = useState(0);
-  const [tick, setTick] = useState(Date.now());
+  const [actionFilter,   setActionFilter]   = useState("all");
+  const [tagFilter,      setTagFilter]      = useState("all");
+  const [aiSettings,     setAiSettings]     = useState({ apiKey: "", model: DEFAULT_AI_MODEL });
+  const [aiStatus,       setAiStatus]       = useState({ state: "idle", message: `Gemini · ${DEFAULT_AI_MODEL}` });
+  const [aiError,        setAiError]        = useState(null);
+  const [toast,          setToast]          = useState(null); // { msg, undo }
+  const [isLoaded,       setIsLoaded]       = useState(false);
+  const [scrollTop,      setScrollTop]      = useState(0);
+  const [tick,           setTick]           = useState(Date.now());
+
   const hasHydrated = useRef(false);
+  const toastTimer  = useRef(null);
 
+  // ── Hydrate ──
   useEffect(() => {
-    let mounted = true;
-
+    let alive = true;
     const hydrate = async () => {
-      const [storedMemos, storedActions, storedAi] = await Promise.all([
-        loadStoredJson("memos", []),
-        loadStoredJson("actions", []),
-        loadStoredJson("aiSettings", { apiKey: "", model: DEFAULT_AI_MODEL }),
+      const [sm, sa, sai] = await Promise.all([
+        loadJson("memos",      []),
+        loadJson("actions",    []),
+        loadJson("aiSettings", { apiKey: "", model: DEFAULT_AI_MODEL }),
       ]);
+      if (!alive) return;
 
-      if (!mounted) return;
+      setMemos(Array.isArray(sm) ? sm : []);
+      setActions(Array.isArray(sa) ? sa : []);
 
-      setMemos(Array.isArray(storedMemos) ? storedMemos : []);
-      setActions(Array.isArray(storedActions) ? storedActions : []);
-
-      if (storedAi && typeof storedAi === "object") {
-        const model = normalizeAiModel(storedAi.model);
-        setAiSettings({
-          apiKey: typeof storedAi.apiKey === "string" ? storedAi.apiKey : "",
-          model,
-        });
-        setAiStatus({ state: "idle", message: `Gemini 교정: ${model}` });
+      if (sai && typeof sai === "object") {
+        const model = normalizeModel(sai.model);
+        setAiSettings({ apiKey: typeof sai.apiKey === "string" ? sai.apiKey : "", model });
+        setAiStatus({ state: "idle", message: `Gemini · ${model}` });
       }
 
       hasHydrated.current = true;
-      setTimeout(() => mounted && setIsLoaded(true), 240);
+      setTimeout(() => alive && setIsLoaded(true), 220);
     };
-
     hydrate();
-    return () => { mounted = false; };
+    return () => { alive = false; };
   }, []);
 
+  // ── Tick ──
   useEffect(() => {
-    const id = setInterval(() => setTick(Date.now()), 30000);
+    const id = setInterval(() => setTick(Date.now()), 30_000);
     return () => clearInterval(id);
   }, []);
 
-  useEffect(() => { if (hasHydrated.current) saveStoredJson("memos", memos); }, [memos]);
-  useEffect(() => { if (hasHydrated.current) saveStoredJson("actions", actions); }, [actions]);
-  useEffect(() => { if (hasHydrated.current) saveStoredJson("aiSettings", aiSettings); }, [aiSettings]);
+  // ── Persist ──
+  useEffect(() => { if (hasHydrated.current) saveJson("memos",      memos);      }, [memos]);
+  useEffect(() => { if (hasHydrated.current) saveJson("actions",    actions);    }, [actions]);
+  useEffect(() => { if (hasHydrated.current) saveJson("aiSettings", aiSettings); }, [aiSettings]);
 
+  // ── Toast helper ──
+  const showToast = useCallback((msg, undoFn) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ msg, undo: undoFn });
+    toastTimer.current = setTimeout(() => setToast(null), UNDO_DELAY_MS);
+  }, []);
+
+  // ── Derived ──
   const filteredActions = useMemo(() => {
-    if (actionFilter === "active") return actions.filter((a) => !a.done);
-    if (actionFilter === "done")   return actions.filter((a) => a.done);
-    return actions;
+    let list = actions;
+    if (actionFilter === "active") list = list.filter((a) => !a.done);
+    if (actionFilter === "done")   list = list.filter((a) => a.done);
+    return list;
   }, [actions, actionFilter]);
 
-  const addMemo = () => {
+  const filteredMemos = useMemo(() =>
+    tagFilter === "all" ? memos : memos.filter((m) => m.tag === tagFilter),
+  [memos, tagFilter]);
+
+  // Group memos by date
+  const memoGroups = useMemo(() => {
+    const map = new Map();
+    for (const memo of filteredMemos) {
+      const label = dateGroupLabel(memo.createdAt);
+      if (!map.has(label)) map.set(label, []);
+      map.get(label).push(memo);
+    }
+    return [...map.entries()];
+  }, [filteredMemos]);
+
+  // ── CRUD ──
+  const addMemo = useCallback(() => {
     const text = memoText.trim();
     if (!text) return;
     setMemos((cur) => [{ id: createId(), text, tag: selectedTag, createdAt: nowIso() }, ...cur]);
     setMemoText("");
-  };
+  }, [memoText, selectedTag]);
 
-  const addAction = () => {
+  const addAction = useCallback(() => {
     const text = actionText.trim();
     if (!text) return;
     setActions((cur) => [
@@ -2004,14 +1611,42 @@ export default function IntelliMemoApp() {
       ...cur,
     ]);
     setActionText("");
-  };
+  }, [actionText, actionDueDate, actionPriority]);
 
-  const deleteMemo   = (id) => setMemos((cur) => cur.filter((m) => m.id !== id));
-  const editMemo     = (id, text) => setMemos((cur) => cur.map((m) => m.id === id ? { ...m, text } : m));
-  const deleteAction = (id) => setActions((cur) => cur.filter((a) => a.id !== id));
-  const toggleAction = (id) => setActions((cur) => cur.map((a) => a.id === id ? { ...a, done: !a.done } : a));
+  const deleteMemo = useCallback((id) => {
+    const target = memos.find((m) => m.id === id);
+    if (!target) return;
+    setMemos((cur) => cur.filter((m) => m.id !== id));
+    showToast(`메모 삭제됨`, () => {
+      setMemos((cur) => {
+        const exists = cur.some((m) => m.id === id);
+        return exists ? cur : [target, ...cur];
+      });
+    });
+  }, [memos, showToast]);
 
-  const correctDraft = async (type, openSettings) => {
+  const editMemo = useCallback((id, text) => {
+    setMemos((cur) => cur.map((m) => m.id === id ? { ...m, text } : m));
+  }, []);
+
+  const deleteAction = useCallback((id) => {
+    const target = actions.find((a) => a.id === id);
+    if (!target) return;
+    setActions((cur) => cur.filter((a) => a.id !== id));
+    showToast(`액션 삭제됨`, () => {
+      setActions((cur) => {
+        const exists = cur.some((a) => a.id === id);
+        return exists ? cur : [target, ...cur];
+      });
+    });
+  }, [actions, showToast]);
+
+  const toggleAction = useCallback((id) => {
+    setActions((cur) => cur.map((a) => a.id === id ? { ...a, done: !a.done } : a));
+  }, []);
+
+  // ── AI correction ──
+  const correctDraft = useCallback(async (type, openSettings) => {
     const text = type === "memos" ? memoText.trim() : actionText.trim();
     if (!text) return;
 
@@ -2021,9 +1656,8 @@ export default function IntelliMemoApp() {
       return;
     }
 
-    setCorrectionError(null);
-
-    const fallbacks = getModelFallbacks(normalizeAiModel(aiSettings.model));
+    setAiError(null);
+    const fallbacks = getModelFallbacks(normalizeModel(aiSettings.model));
     let lastError = null;
     let lastModel = fallbacks.at(-1) ?? DEFAULT_AI_MODEL;
 
@@ -2033,17 +1667,15 @@ export default function IntelliMemoApp() {
       setAiSettings((s) => ({ ...s, model }));
       setAiStatus({
         state: "loading",
-        message: i === 0 ? `${model} 교정 중...` : `${model}로 재시도 중...`,
+        message: i === 0 ? `${model} 교정 중…` : `${model} 재시도 중…`,
       });
 
       try {
-        const corrected = await correctKoreanText({ apiKey: aiSettings.apiKey, model, text, type });
+        const corrected = await correctKorean({ apiKey: aiSettings.apiKey, model, text, type });
         if (type === "memos") setMemoText(corrected);
         else setActionText(corrected);
-        setAiStatus({
-          state: "success",
-          message: i === 0 ? "교정 완료" : `${model}로 교정 완료`,
-        });
+        setAiStatus({ state: "success", message: "교정 완료 ✓" });
+        setTimeout(() => setAiStatus({ state: "idle", message: `Gemini · ${model}` }), 2500);
         return;
       } catch (err) {
         lastError = err;
@@ -2053,96 +1685,117 @@ export default function IntelliMemoApp() {
     openSettings();
     const message = lastError instanceof Error ? lastError.message : "교정 실패";
     setAiStatus({ state: "error", message });
-    setCorrectionError({ model: lastModel, message });
-  };
+    setAiError({ model: lastModel, message });
+    setTimeout(() => setAiError(null), 8000);
+  }, [memoText, actionText, aiSettings]);
 
   return (
-    <main className="app-shell">
+    <main className="app">
       <style>{CSS}</style>
 
-      {/* Aurora background */}
-      <div className="aurora" aria-hidden="true">
-        <div className="aurora-orb aurora-orb-1" />
-        <div className="aurora-orb aurora-orb-2" />
-        <div className="aurora-orb aurora-orb-3" />
-        <div className="aurora-orb aurora-orb-4" />
-      </div>
-      <div className="noise-overlay" aria-hidden="true" />
-
-      <div className="phone-frame">
-        <TopChrome
+      <div className="frame">
+        <Header
           activeView={activeView}
           setActiveView={setActiveView}
           actionFilter={actionFilter}
           setActionFilter={setActionFilter}
-          compact={scrollTop > 24}
+          compact={scrollTop > 20}
         />
 
         <section
-          className="scroll-stage"
+          className="stage"
           onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
         >
           <AnimatePresence mode="wait" initial={false}>
             {activeView === "memos" ? (
               <motion.div
                 key="memos"
-                initial={{ x: -20, opacity: 0 }}
-                animate={{ x: 0, opacity: 1 }}
-                exit={{ x: 20, opacity: 0 }}
-                transition={{ duration: 0.18 }}
+                initial={{ opacity: 0, x: -14 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: 14 }}
+                transition={{ duration: 0.15 }}
               >
                 {!isLoaded ? (
                   <SkeletonList />
-                ) : memos.length === 0 ? (
-                  <EmptyState type="memos" />
                 ) : (
                   <>
-                    <StatsBar memos={memos} actions={actions} activeView="memos" />
-                    <motion.div className="memo-list" layout>
-                      <AnimatePresence initial={false}>
-                        {memos.map((memo, i) => (
-                          <MemoCard
-                            key={memo.id}
-                            memo={memo}
-                            index={i}
-                            tick={tick}
-                            onDelete={deleteMemo}
-                            onEdit={editMemo}
-                          />
-                        ))}
-                      </AnimatePresence>
-                    </motion.div>
+                    <div className="sec-label">
+                      <span className="sec-label-text">메모</span>
+                      <span className="count-badge">{memos.length}</span>
+                    </div>
+
+                    {memos.length > 0 && (
+                      <TagFilterStrip
+                        selected={tagFilter}
+                        onChange={setTagFilter}
+                        tags={TAGS}
+                      />
+                    )}
+
+                    {filteredMemos.length === 0 ? (
+                      <EmptyState type="memos" />
+                    ) : (
+                      memoGroups.map(([label, group]) => (
+                        <div key={label} className="date-group">
+                          <p className="date-group-label">{label}</p>
+                          <motion.div className="memo-group" layout>
+                            <AnimatePresence initial={false}>
+                              {group.map((memo, i) => (
+                                <MemoCard
+                                  key={memo.id}
+                                  memo={memo}
+                                  index={i}
+                                  tick={tick}
+                                  onDelete={deleteMemo}
+                                  onEdit={editMemo}
+                                />
+                              ))}
+                            </AnimatePresence>
+                          </motion.div>
+                        </div>
+                      ))
+                    )}
                   </>
                 )}
               </motion.div>
             ) : (
               <motion.div
                 key="actions"
-                initial={{ x: 20, opacity: 0 }}
-                animate={{ x: 0, opacity: 1 }}
-                exit={{ x: -20, opacity: 0 }}
-                transition={{ duration: 0.18 }}
+                initial={{ opacity: 0, x: 14 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -14 }}
+                transition={{ duration: 0.15 }}
               >
                 {!isLoaded ? (
                   <SkeletonList />
-                ) : filteredActions.length === 0 ? (
-                  <EmptyState type="actions" />
                 ) : (
                   <>
-                    <StatsBar memos={memos} actions={actions} activeView="actions" />
-                    <motion.div className="action-list" layout>
-                      <AnimatePresence initial={false}>
-                        {filteredActions.map((action, i) => (
-                          <ActionCard
-                            key={action.id}
-                            action={action}
-                            index={i}
-                            onToggle={toggleAction}
-                            onDelete={deleteAction}
-                          />
-                        ))}
-                      </AnimatePresence>
-                    </motion.div>
+                    <div className="sec-label">
+                      <span className="sec-label-text">액션</span>
+                      <span className="count-badge">{filteredActions.length}</span>
+                    </div>
+
+                    {actions.length > 0 && (
+                      <ActionProgress actions={actions} />
+                    )}
+
+                    {filteredActions.length === 0 ? (
+                      <EmptyState type="actions" />
+                    ) : (
+                      <motion.div className="action-list" layout>
+                        <AnimatePresence initial={false}>
+                          {filteredActions.map((action, i) => (
+                            <ActionCard
+                              key={action.id}
+                              action={action}
+                              index={i}
+                              onToggle={toggleAction}
+                              onDelete={deleteAction}
+                            />
+                          ))}
+                        </AnimatePresence>
+                      </motion.div>
+                    )}
                   </>
                 )}
               </motion.div>
@@ -2150,30 +1803,41 @@ export default function IntelliMemoApp() {
           </AnimatePresence>
         </section>
 
-        <BottomComposer
+        <Composer
           activeView={activeView}
-          memoText={memoText}
-          setMemoText={setMemoText}
-          selectedTag={selectedTag}
-          setSelectedTag={setSelectedTag}
+          memoText={memoText}           setMemoText={setMemoText}
+          selectedTag={selectedTag}     setSelectedTag={setSelectedTag}
           onAddMemo={addMemo}
-          actionText={actionText}
-          setActionText={setActionText}
-          actionDueDate={actionDueDate}
-          setActionDueDate={setActionDueDate}
-          actionPriority={actionPriority}
-          setActionPriority={setActionPriority}
+          actionText={actionText}       setActionText={setActionText}
+          actionDueDate={actionDueDate} setActionDueDate={setActionDueDate}
+          actionPriority={actionPriority} setActionPriority={setActionPriority}
           onAddAction={addAction}
-          aiSettings={aiSettings}
-          setAiSettings={setAiSettings}
+          aiSettings={aiSettings}       setAiSettings={setAiSettings}
           aiStatus={aiStatus}
           onCorrectDraft={correctDraft}
         />
       </div>
 
+      {/* Undo toast */}
       <AnimatePresence>
-        {correctionError && (
-          <ErrorModal error={correctionError} onClose={() => setCorrectionError(null)} />
+        {toast && (
+          <UndoToast
+            key="undo-toast"
+            msg={toast.msg}
+            onUndo={() => { toast.undo(); setToast(null); }}
+            onDismiss={() => setToast(null)}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* AI error toast */}
+      <AnimatePresence>
+        {aiError && (
+          <ErrorToast
+            key="err-toast"
+            error={aiError}
+            onClose={() => setAiError(null)}
+          />
         )}
       </AnimatePresence>
     </main>
