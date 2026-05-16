@@ -57,7 +57,7 @@ const AI_CORRECTION_MODES = [
     group: "typo",
     modal: false,
     prompt: (text) =>
-      `You proofread Korean quick-capture notes. Return only the fully corrected Korean text. Fix typos and spacing errors only. Preserve every idea, detail, line break, meaning, intent, and tone. Do not summarize, shorten, omit, add explanations, labels, quotation marks, markdown, or alternatives. If already correct, return it unchanged.\n\n오타와 띄어쓰기만 교정해줘. 절대 내용을 바꾸거나 줄이지 마.\n\n${text}`,
+      `You proofread Korean 인텔리메모 notes. Return only the fully corrected Korean text. Fix typos and spacing errors only. Preserve every idea, detail, line break, meaning, intent, and tone. Do not summarize, shorten, omit, add explanations, labels, quotation marks, markdown, or alternatives. If already correct, return it unchanged.\n\n오타와 띄어쓰기만 교정해줘. 절대 내용을 바꾸거나 줄이지 마.\n\n${text}`,
   },
   {
     key:   "grammar",
@@ -120,15 +120,15 @@ const saveJson = async (key, value) => {
 };
 
 const loadSessionValue = (key) => {
-  try { return window.sessionStorage?.getItem(key) ?? ""; }
+  try { return window.localStorage?.getItem(key) ?? ""; }
   catch { return ""; }
 };
 
 const saveSessionValue = (key, value) => {
   try {
-    if (!window.sessionStorage) return;
-    if (value) window.sessionStorage.setItem(key, value);
-    else window.sessionStorage.removeItem(key);
+    if (!window.localStorage) return;
+    if (value) window.localStorage.setItem(key, value);
+    else window.localStorage.removeItem(key);
   } catch {}
 };
 
@@ -2245,7 +2245,7 @@ function CropModal({ dataUrl, mimeType, onCrop, onCancel }) {
       imgRef.current = img;
       const canvas = canvasRef.current;
       if (!canvas) return;
-      const scale = Math.min(1, 1400 / img.naturalWidth);
+      const scale = Math.min(1, 1400 / img.naturalWidth, 1400 / img.naturalHeight);
       canvas.width  = Math.round(img.naturalWidth  * scale);
       canvas.height = Math.round(img.naturalHeight * scale);
       initCrop();
@@ -2332,8 +2332,9 @@ function CropModal({ dataUrl, mimeType, onCrop, onCancel }) {
     const out = document.createElement("canvas");
     const ctx = out.getContext("2d");
 
+    const MAX_PX = 1400;
     if (!c) {
-      const scale = Math.min(1, 1400 / img.naturalWidth);
+      const scale = Math.min(1, MAX_PX / img.naturalWidth, MAX_PX / img.naturalHeight);
       out.width  = Math.round(img.naturalWidth  * scale);
       out.height = Math.round(img.naturalHeight * scale);
       ctx.drawImage(img, 0, 0, out.width, out.height);
@@ -2341,10 +2342,12 @@ function CropModal({ dataUrl, mimeType, onCrop, onCancel }) {
       const sx = img.naturalWidth  / canvas.width;
       const sy = img.naturalHeight / canvas.height;
       const { x1, y1, x2, y2 } = c;
-      out.width  = Math.round((x2 - x1) * sx);
-      out.height = Math.round((y2 - y1) * sy);
-      ctx.drawImage(img, x1 * sx, y1 * sy, (x2 - x1) * sx, (y2 - y1) * sy,
-                        0, 0, out.width, out.height);
+      const cropW = (x2 - x1) * sx;
+      const cropH = (y2 - y1) * sy;
+      const scale = Math.min(1, MAX_PX / cropW, MAX_PX / cropH);
+      out.width  = Math.round(cropW * scale);
+      out.height = Math.round(cropH * scale);
+      ctx.drawImage(img, x1 * sx, y1 * sy, cropW, cropH, 0, 0, out.width, out.height);
     }
 
     const outMime = mimeType === "image/png" ? "image/png" : "image/jpeg";
