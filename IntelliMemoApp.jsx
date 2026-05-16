@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowUp,
@@ -846,6 +847,7 @@ const CSS = `
   .ctrl input[type="date"] {
     font-size: 12px; font-weight: 600; color: var(--t1);
     color-scheme: light; cursor: pointer; flex: 1; text-align: center;
+    padding-right: 8px;
   }
 
   /* AI 처리 유형 선택 칩 (메모 전용) */
@@ -1889,7 +1891,6 @@ function Composer({
           >
             <div className="action-ctrl">
               <label className="ctrl" style={{ cursor: "pointer" }}>
-                <CalendarDays size={14} />
                 <input
                   type="date"
                   value={actionDueDate}
@@ -2016,17 +2017,20 @@ function Composer({
         </button>
       </div>
 
-      <AnimatePresence>
-        {cropData && (
-          <CropModal
-            key="crop-modal"
-            dataUrl={cropData.dataUrl}
-            mimeType={cropData.mimeType}
-            onCrop={handleCropConfirm}
-            onCancel={() => setCropData(null)}
-          />
-        )}
-      </AnimatePresence>
+      {createPortal(
+        <AnimatePresence>
+          {cropData && (
+            <CropModal
+              key="crop-modal"
+              dataUrl={cropData.dataUrl}
+              mimeType={cropData.mimeType}
+              onCrop={handleCropConfirm}
+              onCancel={() => setCropData(null)}
+            />
+          )}
+        </AnimatePresence>,
+        document.body,
+      )}
 
       <AnimatePresence initial={false}>
         {aiOpen && (
