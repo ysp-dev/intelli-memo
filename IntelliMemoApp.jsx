@@ -1371,6 +1371,13 @@ const CSS = `
     transition: background 110ms ease;
   }
   .crop-apply-btn:hover { background: var(--accent-mid); }
+  .crop-save-btn {
+    flex: 1; height: 40px; border-radius: 999px;
+    background: rgba(255,255,255,0.12); color: rgba(255,255,255,0.85);
+    font-size: 13px; font-weight: 700; min-height: 0;
+    transition: background 110ms ease;
+  }
+  .crop-save-btn:hover { background: rgba(255,255,255,0.2); }
 `;
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -2598,6 +2605,48 @@ function CropModal({ dataUrl, mimeType, onCrop, onCancel }) {
         <div className="crop-modal-footer">
           <button type="button" className="crop-cancel-btn" onClick={onCancel}>취소</button>
           <button type="button" className="crop-reset-btn" onClick={initCrop}>초기화</button>
+          <button type="button" className="crop-save-btn" onClick={async () => {
+            const c   = cropRef.current;
+            const img = imgRef.current;
+            const canvas = canvasRef.current;
+            if (!img) return;
+            const out = document.createElement("canvas");
+            const ctx = out.getContext("2d");
+            const MAX_PX = 1400;
+            if (!c) {
+              const scale = Math.min(1, MAX_PX / img.naturalWidth, MAX_PX / img.naturalHeight);
+              out.width  = Math.round(img.naturalWidth  * scale);
+              out.height = Math.round(img.naturalHeight * scale);
+              ctx.drawImage(img, 0, 0, out.width, out.height);
+            } else {
+              const sx = img.naturalWidth  / canvas.width;
+              const sy = img.naturalHeight / canvas.height;
+              const { x1, y1, x2, y2 } = c;
+              const cropW = (x2 - x1) * sx;
+              const cropH = (y2 - y1) * sy;
+              const scale = Math.min(1, MAX_PX / cropW, MAX_PX / cropH);
+              out.width  = Math.round(cropW * scale);
+              out.height = Math.round(cropH * scale);
+              ctx.drawImage(img, x1 * sx, y1 * sy, cropW, cropH, 0, 0, out.width, out.height);
+            }
+            const outMime = mimeType === "image/png" ? "image/png" : "image/jpeg";
+            const ext     = outMime === "image/png" ? "png" : "jpg";
+            const dataUrl = out.toDataURL(outMime, outMime === "image/jpeg" ? 0.92 : undefined);
+            try {
+              const blob = await fetch(dataUrl).then(r => r.blob());
+              const file = new File([blob], `memo-${Date.now()}.${ext}`, { type: outMime });
+              if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+                await navigator.share({ files: [file], title: "메모 이미지" });
+              } else {
+                const a = document.createElement("a");
+                a.href = dataUrl;
+                a.download = `memo-${Date.now()}.${ext}`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+              }
+            } catch (e) { console.error(e); }
+          }}>이미지 저장</button>
           <button type="button" className="crop-apply-btn" onClick={handleApply}>텍스트 추출</button>
         </div>
       </motion.div>
