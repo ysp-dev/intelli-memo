@@ -875,9 +875,10 @@ const CSS = `
   .char-hint {
     font-size: 11px; color: var(--t3);
     font-variant-numeric: tabular-nums;
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
 
-  .btn-row { display: flex; align-items: center; gap: 6px; }
+  .btn-row { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 
   .icon-btn {
     display: grid; place-items: center;
@@ -1900,13 +1901,31 @@ function Composer({
     galleryRef.current?.click();
   };
 
+  const handleImageFile = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        setCropData({ dataUrl: reader.result, mimeType: file.type || "image/jpeg" });
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
   const handleImageSelect = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = "";
-    const reader = new FileReader();
-    reader.onload = () => setCropData({ dataUrl: reader.result, mimeType: file.type || "image/jpeg" });
-    reader.readAsDataURL(file);
+    handleImageFile(file);
+  };
+
+  const handleMemoPaste = (e) => {
+    const imageItem = [...(e.clipboardData?.items ?? [])]
+      .find((item) => item.kind === "file" && item.type.startsWith("image/"));
+    if (!imageItem) return;
+    e.preventDefault();
+    if (!aiSettings.apiKey) { setAiOpen(true); return; }
+    handleImageFile(imageItem.getAsFile());
   };
 
   const handleCropConfirm = async (base64, mimeType) => {
@@ -2015,6 +2034,7 @@ function Composer({
                 value={memoText}
                 rows={1}
                 onChange={(e) => setMemoText(e.target.value)}
+                onPaste={handleMemoPaste}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
                     e.preventDefault();
