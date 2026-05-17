@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import './src/app.css';
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -156,12 +157,13 @@ const relativeTime = (iso, tick) => {
 };
 
 const dateGroupLabel = (iso) => {
-  const now    = new Date();
-  const date   = new Date(iso);
-  const diffMs = now.setHours(0,0,0,0) - new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-  if (diffMs < 0)          return "오늘";
-  if (diffMs < 86_400_000) return "오늘";
-  if (diffMs < 172_800_000)return "어제";
+  const date       = new Date(iso);
+  const now        = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const dateStart  = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const diffMs     = todayStart - dateStart;
+  if (diffMs <= 0)          return "오늘";
+  if (diffMs < 172_800_000) return "어제";
   return `${date.getMonth() + 1}월 ${date.getDate()}일`;
 };
 
@@ -242,10 +244,7 @@ const apiError = (status, errorText) => {
   return msg || `오류 ${status}`;
 };
 
-const correctKorean = async ({ apiKey, model, text, mode = DEFAULT_AI_CORRECTION_MODE }) => {
-  const modeConfig = AI_CORRECTION_MODES.find((m) => m.key === mode) ?? AI_CORRECTION_MODES[0];
-  const prompt = modeConfig.prompt(text);
-
+const callGeminiApi = async ({ apiKey, model, body }) => {
   let res;
   try {
     res = await fetch(
@@ -253,10 +252,7 @@ const correctKorean = async ({ apiKey, model, text, mode = DEFAULT_AI_CORRECTION
       {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: 1024, temperature: 0.2 },
-        }),
+        body: JSON.stringify(body),
       },
     );
   } catch (e) {
@@ -264,11 +260,11 @@ const correctKorean = async ({ apiKey, model, text, mode = DEFAULT_AI_CORRECTION
   }
 
   if (!res.ok) {
-    const body = await res.text();
-    let rawMsg = body;
-    try { const p = JSON.parse(body); rawMsg = p?.error?.message || body; } catch {}
-    const ra = res.headers.get("Retry-After");
-    const err = new Error(apiError(res.status, body));
+    const rawBody = await res.text();
+    let rawMsg = rawBody;
+    try { const p = JSON.parse(rawBody); rawMsg = p?.error?.message || rawBody; } catch {}
+    const ra  = res.headers.get("Retry-After");
+    const err = new Error(apiError(res.status, rawBody));
     err.status = res.status;
     const retryAfterSec = parseRetryAfter(ra);
     if (retryAfterSec) err.retryAfter = retryAfterSec;
@@ -276,7 +272,18 @@ const correctKorean = async ({ apiKey, model, text, mode = DEFAULT_AI_CORRECTION
     throw err;
   }
 
-  const data = await res.json();
+  return res.json();
+};
+
+const correctKorean = async ({ apiKey, model, text, mode = DEFAULT_AI_CORRECTION_MODE }) => {
+  const modeConfig = AI_CORRECTION_MODES.find((m) => m.key === mode) ?? AI_CORRECTION_MODES[0];
+  const data = await callGeminiApi({
+    apiKey, model,
+    body: {
+      contents: [{ role: "user", parts: [{ text: modeConfig.prompt(text) }] }],
+      generationConfig: { maxOutputTokens: 1024, temperature: 0.2 },
+    },
+  });
   if ((data.candidates ?? []).some((c) => c.finishReason === "MAX_TOKENS"))
     throw new Error("결과가 너무 길어 중단됐습니다. 텍스트를 나눠서 교정하세요.");
   const corrected = extractText(data);
@@ -285,1102 +292,151 @@ const correctKorean = async ({ apiKey, model, text, mode = DEFAULT_AI_CORRECTION
 };
 
 const extractTextFromImage = async ({ apiKey, model, base64, mimeType = "image/jpeg" }) => {
-  let res;
-  try {
-    res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-        body: JSON.stringify({
-          contents: [{
-            parts: [
-              { text: "이미지에서 텍스트를 모두 추출해줘. 레이아웃과 줄바꿈을 최대한 보존하고 텍스트만 반환해. 텍스트가 없으면 빈 문자열을 반환해." },
-              { inline_data: { mime_type: mimeType, data: base64 } },
-            ],
-          }],
-          generationConfig: { maxOutputTokens: 2048, temperature: 0.1 },
-        }),
-      },
-    );
-  } catch (e) {
-    throw new Error(e instanceof TypeError ? "네트워크 연결을 확인하세요." : "API 호출 실패");
-  }
-  if (!res.ok) {
-    const body = await res.text();
-    let rawMsg = body;
-    try { const p = JSON.parse(body); rawMsg = p?.error?.message || body; } catch {}
-    const ra = res.headers.get("Retry-After");
-    const err = new Error(apiError(res.status, body));
-    err.status = res.status;
-    const retryAfterSec = parseRetryAfter(ra);
-    if (retryAfterSec) err.retryAfter = retryAfterSec;
-    if (res.status === 429) err.limitType = detectRateLimitType(rawMsg, ra);
-    throw err;
-  }
-  const data = await res.json();
+  const data = await callGeminiApi({
+    apiKey, model,
+    body: {
+      contents: [{
+        parts: [
+          { text: "이미지에서 텍스트를 모두 추출해줘. 레이아웃과 줄바꿈을 최대한 보존하고 텍스트만 반환해. 텍스트가 없으면 빈 문자열을 반환해." },
+          { inline_data: { mime_type: mimeType, data: base64 } },
+        ],
+      }],
+      generationConfig: { maxOutputTokens: 2048, temperature: 0.1 },
+    },
+  });
   return extractText(data) ?? "";
 };
 
-// ─── CSS ─────────────────────────────────────────────────────────────────────
-
-const CSS = `
-  *, *::before, *::after { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body, #root { margin: 0; padding: 0; min-height: 100%; }
-  html { overscroll-behavior-x: none; }
-
-  body {
-    background: #f0eeea;
-    font-family: -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo',
-                 'Pretendard', 'Noto Sans KR', system-ui, sans-serif;
-    -webkit-font-smoothing: antialiased;
-    color: #111;
-    overflow-x: hidden;
-  }
-
-  button, input, textarea, select {
-    font: inherit; border: none; outline: none;
-    background: none; padding: 0; margin: 0; cursor: pointer;
-  }
-
-  textarea { resize: none; }
-
-  :root {
-    --bg:       #f0eeea;
-    --surface:  #ffffff;
-    --raised:   #f7f6f3;
-
-    --t1: #111111;
-    --t2: #555555;
-    --t3: #999999;
-
-    --border:   rgba(0,0,0,0.07);
-    --border-2: rgba(0,0,0,0.13);
-
-    --accent:      #5b21b6;
-    --accent-bg:   #ede9fe;
-    --accent-mid:  #7c3aed;
-
-    --red:    #dc2626;
-    --red-bg: #fee2e2;
-
-    --amber:    #d97706;
-    --amber-bg: #fffbeb;
-
-    --green:    #16a34a;
-    --green-bg: #f0fdf4;
-
-    --sh1: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
-    --sh2: 0 4px 16px rgba(0,0,0,0.07), 0 2px 6px rgba(0,0,0,0.04);
-    --sh3: 0 12px 40px rgba(0,0,0,0.09), 0 4px 12px rgba(0,0,0,0.05);
-
-    --r-s: 8px;
-    --r-m: 14px;
-    --r-l: 20px;
-    --r-xl: 26px;
-  }
-
-  /* ── App ── */
-  .app { min-height: 100vh; min-height: 100dvh; background: var(--bg); display: flex; justify-content: center; }
-
-  /* ── 모바일 세로: flex 3단 (헤더 → 입력 → 목록) ── */
-  .frame {
-    display: flex;
-    flex-direction: column;
-    width: min(100vw, 430px);
-    height: 100vh;
-    height: 100dvh;
-    overflow: hidden;
-  }
-
-  /* ── Header: flex 첫 번째 영역 ── */
-  .hdr {
-    flex-shrink: 0;
-    width: 100%;
-    padding-top: env(safe-area-inset-top);
-    background: rgba(240,238,234,0.96);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    border-bottom: 1px solid var(--border);
-    transition: background 180ms ease;
-    z-index: 10;
-  }
-
-  .hdr.compact { background: rgba(240,238,234,0.99); }
-
-  .hdr-body {
-    padding: 14px 16px 12px;
-    display: flex; flex-direction: column; gap: 11px;
-  }
-
-  .hdr-top { display: flex; align-items: flex-start; justify-content: space-between; }
-
-  .brand h1 {
-    margin: 0;
-    font-size: 22px; font-weight: 800;
-    letter-spacing: -0.03em; line-height: 1.1;
-    color: var(--t3);
-  }
-  .brand p {
-    margin: 3px 0 0;
-    font-size: 10px; font-weight: 700;
-    letter-spacing: 0.08em; text-transform: uppercase;
-    color: var(--t3);
-  }
-
-  .hdr.compact .brand h1 { font-size: 20px; }
-
-  .gemini-badge {
-    display: inline-flex; align-items: center; gap: 5px;
-    height: 30px; padding: 0 11px;
-    border-radius: 999px;
-    background: var(--accent-bg); color: var(--accent);
-    font-size: 11px; font-weight: 700;
-  }
-
-  /* ── Segment control ── */
-  .seg {
-    position: relative; display: grid; grid-template-columns: 1fr 1fr;
-    height: 44px; padding: 3px;
-    border-radius: var(--r-m);
-    background: rgba(0,0,0,0.055);
-    overflow: hidden;
-  }
-
-  .seg-thumb {
-    position: absolute; top: 3px; left: 3px;
-    width: calc(50% - 3px); height: calc(100% - 6px);
-    border-radius: 11px;
-    background: var(--surface);
-    box-shadow: var(--sh1);
-  }
-
-  .seg button {
-    position: relative; z-index: 1;
-    display: flex; align-items: center; justify-content: center; gap: 6px;
-    border-radius: 11px;
-    font-size: 13px; font-weight: 600;
-    color: var(--t3);
-    min-height: 0; min-width: 0;
-    transition: color 160ms ease;
-  }
-  .seg button.on { color: var(--t1); }
-
-  /* ── Filter bar ── */
-  .filter-bar { display: flex; align-items: center; gap: 6px; }
-
-  .filter-bar svg { color: var(--t3); flex-shrink: 0; }
-
-  .f-chip {
-    height: 28px; padding: 0 12px; border-radius: 999px;
-    font-size: 12px; font-weight: 600; color: var(--t2);
-    background: rgba(0,0,0,0.045); border: 1px solid transparent;
-    min-height: 0; min-width: 0;
-    transition: background 130ms ease, color 130ms ease;
-  }
-  .f-chip.on[data-filter="all"]    { background: rgba(100,116,139,0.12); color: #64748b; border-color: rgba(100,116,139,0.4); }
-  .f-chip.on[data-filter="active"] { background: rgba(14,165,233,0.12);  color: #0ea5e9; border-color: rgba(14,165,233,0.4); }
-  .f-chip.on[data-filter="done"]   { background: rgba(16,185,129,0.12);  color: #10b981; border-color: rgba(16,185,129,0.4); }
-
-  /* ── Tag filter strip (memo view) ── */
-  .tag-filter-strip {
-    display: flex; align-items: center; gap: 6px; margin-bottom: 12px;
-    overflow-x: auto; scrollbar-width: none;
-  }
-  .tag-filter-strip::-webkit-scrollbar { display: none; }
-
-  .tf-chip {
-    display: inline-flex; align-items: center; gap: 5px;
-    height: 28px; padding: 0 10px; border-radius: 999px;
-    font-size: 11px; font-weight: 700;
-    white-space: nowrap; flex-shrink: 0;
-    border: 1.5px solid var(--border); color: var(--t2);
-    background: var(--surface);
-    min-height: 0; min-width: 0;
-    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
-  }
-
-  .tf-chip-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
-
-  .tf-chip.on[data-tag="all"]    { background: var(--t1); color: #fff; border-color: var(--t1); }
-  .tf-chip.on[data-tag="#업무"]   { background: #ede9fe; color: #5b21b6; border-color: rgba(124,58,237,0.3); }
-  .tf-chip.on[data-tag="#아이디어"]{ background: #ecfeff; color: #0e7490; border-color: rgba(6,182,212,0.3); }
-  .tf-chip.on[data-tag="#개인"]   { background: #fce7f3; color: #9d174d; border-color: rgba(236,72,153,0.25); }
-
-  /* ── Scroll stage ── */
-  /* ── Stage: flex 세 번째 영역 (스크롤 목록) ── */
-  .stage {
-    flex: 1;
-    overflow-y: auto;
-    scrollbar-width: none;
-    padding: 14px 14px calc(16px + env(safe-area-inset-bottom));
-    overscroll-behavior: contain;
-  }
-  .stage::-webkit-scrollbar { display: none; }
-
-  .app-footer {
-    text-align: center; padding: 20px 0 4px;
-    font-size: 11px; color: var(--t3); letter-spacing: 0.03em;
-  }
-
-  /* ── Section label ── */
-  .sec-label {
-    display: flex; align-items: center; justify-content: space-between;
-    margin-bottom: 10px;
-  }
-  .sec-label-text {
-    font-size: 11px; font-weight: 700;
-    letter-spacing: 0.06em; text-transform: uppercase; color: var(--t3);
-  }
-  .count-badge {
-    display: flex; align-items: center;
-    height: 20px; padding: 0 8px; border-radius: 999px;
-    background: rgba(0,0,0,0.06);
-    font-size: 11px; font-weight: 700; color: var(--t2);
-  }
-
-  /* ── Date group ── */
-  .date-group { margin-bottom: 16px; }
-
-  .date-group-label {
-    font-size: 11px; font-weight: 700;
-    letter-spacing: 0.04em; text-transform: uppercase;
-    color: var(--t3); margin-bottom: 6px;
-    padding: 0 2px;
-  }
-
-  /* ── Swipe shell (공통) ─────────────────────────────────
-     swipe-wrap 하나만 overflow:hidden. 부모에는 절대 없애기.
-     이렇게 해야 스와이프 시 swipe-bg가 제대로 드러남.
-  ── */
-  .memo-list { display: flex; flex-direction: column; gap: 8px; }
-
-  .swipe-wrap {
-    position: relative;
-    overflow: hidden;
-    border-radius: var(--r-l);
-    isolation: isolate;
-    box-shadow: var(--sh1);
-  }
-
-  /* 삭제 배경: 스와이프 시 드러나는 영역 */
-  .swipe-bg {
-    position: absolute;
-    inset: 0;
-    background: var(--bg);   /* 중립색 — 핑크 대신 배경색 */
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    padding-right: 20px;
-  }
-
-  /* 휴지통 아이콘 - 빨간 원 안에 흰 아이콘 */
-  .delete-icon-circle {
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    background: var(--red);
-    display: grid;
-    place-items: center;
-    color: #fff;
-    flex-shrink: 0;
-  }
-
-  /* ── Memo card (독립 카드, 그룹 없음) ── */
-  .memo-card {
-    position: relative;
-    width: 100%;
-    padding: 14px 16px;
-    background: var(--surface);
-    border-radius: var(--r-l);
-    border: 1px solid var(--border);
-    touch-action: pan-y;
-    text-align: left;
-    /* layout shift 방지: height 변화를 자연스럽게 */
-    transition: box-shadow 120ms ease;
-  }
-
-  .memo-card.is-editing {
-    border-color: rgba(91,33,182,0.25);
-    box-shadow: 0 0 0 3px rgba(91,33,182,0.06), var(--sh1);
-    padding-bottom: 20px;
-  }
-
-  .memo-top {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 8px;
-  }
-
-  .memo-meta {
-    display: flex; align-items: center; gap: 8px;
-    flex: 1; min-width: 0;
-  }
-
-  .tag-badge {
-    display: inline-flex; align-items: center; gap: 5px;
-    height: 22px; padding: 0 9px; border-radius: 999px;
-    font-size: 11px; font-weight: 700; flex-shrink: 0;
-  }
-  .tag-badge-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
-
-  .memo-time {
-    font-size: 11px; color: var(--t3);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* 카드 액션 버튼 그룹 */
-  .memo-actions {
-    display: flex; align-items: center; gap: 4px; flex-shrink: 0;
-  }
-
-  .card-btn {
-    display: grid; place-items: center;
-    width: 30px; height: 30px;
-    border-radius: var(--r-s);
-    flex-shrink: 0; min-height: 0; min-width: 0;
-    color: var(--t3); background: var(--raised);
-    transition: background 110ms ease, color 110ms ease;
-  }
-  .card-btn:hover { background: rgba(0,0,0,0.08); }
-  .card-btn.edit-btn:hover  { background: var(--accent-bg); color: var(--accent); }
-  .card-btn.save-btn        { background: var(--accent-bg); color: var(--accent); }
-  .card-btn.save-btn:hover  { background: var(--accent); color: #fff; }
-  .card-btn.save-btn:active { background: #4c1d95; color: #fff; }
-  .card-btn.del-btn:hover   { background: var(--red-bg); color: var(--red); }
-  .card-btn.del-btn:active  { background: #fecaca; color: var(--red); }
-  .card-btn.copy-btn.copied { background: var(--accent-bg); color: var(--accent); }
-
-  /* 헤더 레이아웃 토글 버튼 */
-  .layout-toggle-btn {
-    display: inline-flex; align-items: center; justify-content: center;
-    width: 32px; height: 32px; border-radius: 50%;
-    background: rgba(0,0,0,0.05); color: var(--t2);
-    transition: background 120ms ease, color 120ms ease;
-    flex-shrink: 0;
-  }
-  .layout-toggle-btn:hover { background: rgba(0,0,0,0.09); color: var(--t1); }
-  .layout-toggle-btn.reload-btn { color: var(--t3); }
-  .layout-toggle-btn.search-active { background: rgba(0,0,0,0.09); color: var(--t1); }
-
-  .search-bar-wrap { overflow: hidden; }
-  .search-bar {
-    display: flex; align-items: center; gap: 8px;
-    height: 36px; padding: 0 12px;
-    border-radius: var(--r-m);
-    background: rgba(0,0,0,0.055); border: 1px solid var(--border);
-  }
-  .search-bar svg { color: var(--t3); flex-shrink: 0; }
-  .search-bar input {
-    flex: 1; border: none; background: transparent;
-    font-size: 13px; color: var(--t1); outline: none;
-  }
-  .search-bar input::placeholder { color: var(--t3); }
-  .search-clear-btn {
-    display: flex; align-items: center; justify-content: center;
-    color: var(--t3); flex-shrink: 0;
-  }
-  .memo-body {
-    margin: 0;
-    font-size: 14px; font-weight: 400; line-height: 1.65;
-    color: var(--t1); overflow-wrap: anywhere;
-  }
-
-  .memo-body.truncated {
-    display: -webkit-box;
-    -webkit-line-clamp: 4;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-
-  .expand-btn {
-    display: inline-flex; align-items: center; gap: 3px;
-    margin-top: 6px;
-    font-size: 12px; font-weight: 600; color: var(--accent);
-    background: none; min-height: 0; min-width: 0;
-    padding: 0;
-  }
-
-  .memo-editor {
-    width: 100%; margin-top: 2px;
-    padding: 10px 12px;
-    border: 1.5px solid rgba(91,33,182,0.3);
-    border-radius: var(--r-s);
-    background: var(--accent-bg);
-    color: var(--t1); font-size: 16px; line-height: 1.65;
-    caret-color: var(--accent); min-height: 80px;
-    resize: none; overflow: hidden;
-  }
-
-  /* ── Action list ── */
-  .action-list { display: flex; flex-direction: column; gap: 8px; }
-
-  /* ── Progress bar ── */
-  .progress-bar-wrap { margin-bottom: 12px; }
-  .progress-header {
-    display: flex; align-items: center; justify-content: space-between;
-    margin-bottom: 6px;
-  }
-  .progress-label { font-size: 12px; font-weight: 600; color: var(--t2); }
-  .progress-pct { font-size: 12px; font-weight: 700; color: var(--accent); }
-
-  .progress-track {
-    height: 6px; border-radius: 999px;
-    background: rgba(0,0,0,0.07); overflow: hidden;
-  }
-  .progress-fill {
-    height: 100%; border-radius: 999px;
-    background: linear-gradient(90deg, var(--accent-mid), var(--accent));
-    transition: width 400ms ease;
-  }
-
-  /* ── Action card ── */
-  .action-card {
-    position: relative; display: flex; align-items: flex-start; gap: 12px;
-    padding: 12px 14px 14px;
-    background: var(--surface);
-    border-radius: var(--r-l);
-    border: 1px solid var(--border);
-    touch-action: pan-y;
-    /* layout="position" 없이도 자연스럽게 */
-    transition: opacity 200ms ease, box-shadow 120ms ease;
-  }
-  .action-card.hi { border-left: 3px solid #f59e0b; }
-  .action-card.done { opacity: 0.38; }
-
-  /* ── Checkbox ── */
-  .chk {
-    flex-shrink: 0; width: 24px; height: 24px; margin-top: 2px;
-    border-radius: 6px; border: 2px solid var(--border-2);
-    background: var(--surface); display: grid; place-items: center;
-    color: transparent; min-height: 0; min-width: 0;
-    transition: background 180ms ease, border-color 180ms ease, color 180ms ease;
-  }
-  .chk.checked { background: var(--accent); border-color: var(--accent); color: #fff; }
-
-  .action-body { flex: 1; min-width: 0; }
-
-  .action-text {
-    margin: 0 0 6px;
-    font-size: 14px; font-weight: 500; line-height: 1.55;
-    color: var(--t1); overflow-wrap: anywhere;
-  }
-  .action-card.done .action-text { text-decoration: line-through; color: var(--t3); }
-
-  .action-meta { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
-
-  .m-chip {
-    display: inline-flex; align-items: center; gap: 3px;
-    height: 20px; padding: 0 7px; border-radius: 999px;
-    font-size: 10px; font-weight: 600;
-    color: var(--t3); background: var(--raised); border: 1px solid var(--border);
-    white-space: nowrap; flex-shrink: 0;
-  }
-  .m-chip svg { display: block; flex-shrink: 0; overflow: visible; }
-  .m-chip.overdue { color: var(--amber); background: var(--amber-bg); border-color: rgba(217,119,6,0.2); }
-  .m-chip.hi-pill { color: var(--amber); background: var(--amber-bg); border-color: rgba(217,119,6,0.2); }
-
-  /* ── Empty state ── */
-  .empty {
-    min-height: 260px;
-    display: flex; flex-direction: column;
-    align-items: center; justify-content: center;
-    gap: 14px; text-align: center;
-  }
-  .empty-icon {
-    width: 54px; height: 54px;
-    border-radius: var(--r-l);
-    background: var(--accent-bg); color: var(--accent);
-    display: grid; place-items: center;
-  }
-  .empty p {
-    margin: 0; font-size: 14px; font-weight: 500;
-    color: var(--t3); line-height: 1.6; max-width: 220px;
-  }
-
-  /* ── Skeleton ── */
-  .skel-wrap { display: flex; flex-direction: column; gap: 8px; }
-  .skel {
-    border-radius: var(--r-l);
-    background: linear-gradient(90deg, rgba(0,0,0,0.04) 25%, rgba(0,0,0,0.07) 50%, rgba(0,0,0,0.04) 75%);
-    background-size: 300% 100%;
-    animation: skel 1.3s ease-in-out infinite;
-  }
-  @keyframes skel { 0% { background-position: 120% 0; } 100% { background-position: -120% 0; } }
-
-  /* ── Composer (bottom sheet) ── */
-  /* ── Composer: flex 두 번째 영역 (입력 영역) ── */
-  .composer {
-    flex-shrink: 0;
-    width: 100%;
-    padding: 12px 16px 14px;
-    background: #fff;
-    border-bottom: 1px solid var(--border);
-    /* 아래쪽 그림자 → 목록과 입력 영역 분리감 */
-    box-shadow: 0 3px 14px rgba(0,0,0,0.05);
-    z-index: 5;
-  }
-
-  /* 핸들바: flex 중간 패널에서는 숨김 */
-  .handle { display: none; }
-
-  /* Tag selector */
-  .tag-row { display: flex; gap: 6px; margin-bottom: 10px; }
-
-  .tag-btn {
-    flex: 1; height: 38px; border-radius: var(--r-s);
-    font-size: 12px; font-weight: 700;
-    color: var(--t2); background: var(--raised);
-    border: 1.5px solid var(--border);
-    min-height: 0; min-width: 0;
-    transition: background 130ms ease, color 130ms ease, border-color 130ms ease;
-  }
-  .tag-btn.on[data-tag="#업무"]    { background: #ede9fe; color: #5b21b6; border-color: rgba(124,58,237,0.28); }
-  .tag-btn.on[data-tag="#아이디어"] { background: #ecfeff; color: #0e7490; border-color: rgba(6,182,212,0.28); }
-  .tag-btn.on[data-tag="#개인"]    { background: #fce7f3; color: #9d174d; border-color: rgba(236,72,153,0.25); }
-  .tag-btn.sm {
-    flex: none; height: 22px; padding: 0 9px; border-radius: 999px;
-    font-size: 11px; border-width: 1px;
-  }
-
-  /* Textarea composer */
-  .textarea-wrap {
-    position: relative;
-    border-radius: var(--r-m); border: 1.5px solid var(--border);
-    background: var(--raised);
-    transition: border-color 160ms ease, box-shadow 160ms ease;
-  }
-  .textarea-wrap:focus-within {
-    border-color: rgba(91,33,182,0.35);
-    background: #fff;
-  }
-
-  .composer-textarea {
-    width: 100%; min-height: 52px; max-height: 280px;
-    padding: 14px 16px 10px;
-    font-size: 16px; font-weight: 400; line-height: 1.5;
-    color: var(--t1); overflow-y: auto;
-    caret-color: var(--accent);
-    display: block;
-  }
-  .composer-textarea::placeholder { color: var(--t3); }
-
-  .textarea-footer {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 6px 10px 8px;
-  }
-
-  .char-hint {
-    font-size: 11px; color: var(--t3);
-    font-variant-numeric: tabular-nums;
-    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-
-  .btn-row { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-
-  .icon-btn {
-    display: grid; place-items: center;
-    width: 36px; height: 36px;
-    border-radius: var(--r-s);
-    flex-shrink: 0; min-height: 0; min-width: 0;
-  }
-
-  .btn-ai {
-    color: var(--accent); background: var(--accent-bg);
-    transition: background 120ms ease, opacity 120ms ease;
-  }
-  .btn-ai:disabled { opacity: 0.3; cursor: default; }
-  .btn-ai.spinning svg { animation: spin 0.7s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  .btn-clear {
-    color: var(--t3); background: var(--raised);
-  }
-
-  .btn-camera, .btn-gallery {
-    color: var(--t2); background: var(--raised);
-    transition: background 120ms ease, color 120ms ease;
-  }
-  .btn-camera:hover, .btn-gallery:hover { background: rgba(0,0,0,0.08); color: var(--t1); }
-  .btn-camera:disabled, .btn-gallery:disabled { opacity: 0.3; cursor: default; }
-  .btn-camera.scanning svg { animation: spin 0.9s linear infinite; }
-
-  .btn-submit {
-    width: 36px; height: 36px; border-radius: 50%;
-    background: var(--accent); color: #fff;
-    box-shadow: 0 2px 8px rgba(91,33,182,0.28);
-    transition: transform 120ms ease, background 120ms ease, box-shadow 120ms ease;
-  }
-  .btn-submit:hover { background: var(--accent-mid); }
-  .btn-submit:active { transform: scale(0.9); background: #4c1d95; box-shadow: none; }
-  .btn-submit:disabled { opacity: 0.25; cursor: default; box-shadow: none; }
-
-  /* Action controls */
-  .action-ctrl { display: flex; gap: 8px; margin-bottom: 10px; }
-
-  .ctrl {
-    flex: 1; height: 38px;
-    display: flex; align-items: center; justify-content: center; gap: 6px;
-    border-radius: var(--r-s);
-    font-size: 12px; font-weight: 600;
-    color: var(--t2); background: var(--raised); border: 1.5px solid var(--border);
-    min-height: 0; min-width: 0;
-    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
-  }
-  .ctrl.hi-on { background: var(--amber-bg); color: var(--amber); border-color: rgba(217,119,6,0.25); }
-  .ctrl svg { display: block; flex-shrink: 0; pointer-events: none; }
-  .ctrl input[type="date"] {
-    font-size: 12px; font-weight: 600; color: var(--t1);
-    color-scheme: light; cursor: pointer; text-align: center;
-  }
-  .ctrl input[type="date"]::-webkit-calendar-picker-indicator { display: none; }
-
-  /* AI 처리 유형 선택 칩 (메모 전용) */
-  .ai-mode-row {
-    display: flex; align-items: center; gap: 5px; margin-top: 8px;
-  }
-  .ai-submode-row {
-    margin-top: 4px; padding-left: 2px;
-  }
-  .ai-mode-chip {
-    display: inline-flex; align-items: center; gap: 3px;
-    height: 24px; padding: 0 10px; border-radius: 999px;
-    font-size: 11px; font-weight: 600;
-    color: var(--t3); background: var(--raised); border: 1px solid var(--border);
-    white-space: nowrap; min-height: 0; min-width: 0;
-    transition: background 110ms ease, color 110ms ease, border-color 110ms ease;
-  }
-  .ai-mode-chip.typo-chip     { border-color: rgba(249,115,22,0.35); }
-  .ai-mode-chip.typo-chip.on  { background: rgba(249,115,22,0.12); color: #f97316; border-color: rgba(249,115,22,0.5); }
-  .ai-mode-chip.sentence-chip     { border-color: rgba(59,130,246,0.35); }
-  .ai-mode-chip.sentence-chip.on  { background: rgba(59,130,246,0.12); color: #3b82f6; border-color: rgba(59,130,246,0.5); }
-  .ai-mode-chip.translate-chip     { border-color: rgba(16,185,129,0.35); }
-  .ai-mode-chip.translate-chip.on  { background: rgba(16,185,129,0.12); color: #10b981; border-color: rgba(16,185,129,0.5); }
-  .ai-mode-chip.grammar-chip     { border-color: rgba(14,165,233,0.35); }
-  .ai-mode-chip.grammar-chip.on  { background: rgba(14,165,233,0.12); color: #0ea5e9; border-color: rgba(14,165,233,0.5); }
-  .ai-mode-chip.style-chip     { border-color: rgba(139,92,246,0.35); }
-  .ai-mode-chip.style-chip.on  { background: rgba(139,92,246,0.12); color: #8b5cf6; border-color: rgba(139,92,246,0.5); }
-  .ai-mode-chip.semantic-chip     { border-color: rgba(245,158,11,0.35); }
-  .ai-mode-chip.semantic-chip.on  { background: rgba(245,158,11,0.12); color: #f59e0b; border-color: rgba(245,158,11,0.5); }
-
-  .rate-limit-bar {
-    display: flex; align-items: center; justify-content: space-between; gap: 8px;
-    padding: 7px 12px; border-radius: var(--r-m); margin-top: 8px;
-    background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3);
-    font-size: 12px; color: #d97706;
-  }
-  .rate-limit-dismiss {
-    font-size: 11px; font-weight: 600; color: #d97706;
-    white-space: nowrap; text-decoration: underline; text-underline-offset: 2px;
-  }
-
-  /* AI row */
-  .ai-row {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 8px; margin-top: 10px;
-  }
-
-  /* 문장 교정 모달 */
-  .correction-overlay {
-    position: fixed; inset: 0; z-index: 200;
-    background: rgba(0,0,0,0.36);
-    display: flex; align-items: center; justify-content: center;
-    padding: 24px;
-  }
-  .correction-modal {
-    width: 100%; max-width: 500px;
-    background: var(--surface);
-    border-radius: 20px;
-    box-shadow: 0 24px 60px rgba(0,0,0,0.18);
-    display: flex; flex-direction: column;
-    overflow: hidden;
-  }
-  .correction-modal-hdr {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 16px 18px 12px;
-    border-bottom: 1px solid var(--border);
-  }
-  .correction-modal-hdr h2 {
-    margin: 0; font-size: 14px; font-weight: 700; color: var(--t1);
-  }
-  .correction-modal-hdr h2 span {
-    font-weight: 400; color: var(--t3); font-size: 12px; margin-left: 6px;
-  }
-  .correction-close-btn {
-    display: grid; place-items: center;
-    width: 28px; height: 28px; border-radius: 50%;
-    color: var(--t3); background: var(--raised);
-    transition: background 110ms ease;
-  }
-  .correction-close-btn:hover { background: rgba(0,0,0,0.08); }
-  .correction-body {
-    padding: 14px 18px; display: flex; flex-direction: column; gap: 10px;
-    overflow-y: auto; max-height: 55vh;
-  }
-  .correction-label {
-    font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
-    text-transform: uppercase; color: var(--t3); margin: 0 0 5px;
-  }
-  .correction-text {
-    margin: 0; font-size: 13.5px; line-height: 1.65;
-    color: var(--t1); white-space: pre-wrap; overflow-wrap: anywhere;
-  }
-  .correction-box {
-    padding: 11px 13px; border-radius: 12px;
-  }
-  .correction-box.original  { background: var(--raised); }
-  .correction-box.suggested { background: var(--accent-bg); border: 1px solid rgba(91,33,182,0.15); }
-  .correction-arrow { text-align: center; font-size: 14px; color: var(--t3); line-height: 1; }
-  .correction-footer {
-    display: flex; gap: 8px; padding: 12px 18px 16px;
-    border-top: 1px solid var(--border);
-  }
-  .correction-apply-btn {
-    flex: 1; height: 38px; border-radius: 999px;
-    background: var(--accent); color: #fff;
-    font-size: 13px; font-weight: 700;
-    display: flex; align-items: center; justify-content: center;
-    min-height: 0; transition: background 110ms ease;
-  }
-  .correction-apply-btn:active { background: #4c1d95; }
-  .correction-cancel-btn {
-    height: 38px; padding: 0 18px; border-radius: 999px;
-    background: var(--raised); color: var(--t2);
-    border: 1px solid var(--border);
-    font-size: 13px; font-weight: 600;
-    display: flex; align-items: center; justify-content: center;
-    min-height: 0;
-  }
-  .correction-cancel-btn:active { opacity: 0.7; }
-
-  .ai-key-btn {
-    display: flex; align-items: center; gap: 5px;
-    height: 26px; padding: 0 10px; border-radius: 999px;
-    font-size: 11px; font-weight: 700;
-    color: var(--t2); background: var(--raised); border: 1px solid var(--border);
-    min-height: 0; min-width: 0; white-space: nowrap;
-  }
-
-  .ai-msg {
-    font-size: 11px; font-weight: 600; color: var(--t3);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    min-width: 0; background: none; min-height: 0; cursor: pointer;
-  }
-  .ai-msg.loading, .ai-msg.success { color: var(--accent); }
-  .ai-msg.error { color: var(--red); }
-  .ai-msg.rate-limited { color: #d97706; }
-
-  /* AI panel */
-  .ai-panel {
-    display: grid; grid-template-columns: 1fr 148px; gap: 8px;
-    overflow: hidden; margin-top: 10px;
-  }
-  .ai-panel input,
-  .ai-panel select {
-    height: 40px; padding: 0 12px;
-    border-radius: var(--r-s); border: 1.5px solid var(--border);
-    background: var(--raised); font-size: 12px; font-weight: 500;
-    color: var(--t1); min-width: 0;
-    transition: border-color 140ms ease;
-  }
-  .ai-panel input:focus, .ai-panel select:focus { border-color: rgba(91,33,182,0.3); }
-
-  /* ── Toast ── */
-  .toast {
-    position: fixed; z-index: 60;
-    bottom: calc(env(safe-area-inset-bottom) + 16px);
-    left: 50%; transform: translateX(-50%);
-    width: min(calc(100vw - 32px), 380px);
-    display: flex; align-items: center; justify-content: space-between; gap: 12px;
-    padding: 0 16px;
-    height: 52px;
-    border-radius: var(--r-l);
-    background: #1a1a1a; color: #fff;
-    box-shadow: var(--sh3);
-    pointer-events: all;
-  }
-
-  .toast-msg { font-size: 13px; font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-  .toast-undo {
-    display: flex; align-items: center; gap: 5px;
-    height: 32px; padding: 0 12px; border-radius: 999px;
-    background: rgba(255,255,255,0.15); color: #fff;
-    font-size: 12px; font-weight: 700;
-    flex-shrink: 0; min-height: 0; min-width: 0;
-    transition: background 120ms ease;
-  }
-  .toast-undo:hover { background: rgba(255,255,255,0.22); }
-
-  /* ── Error modal ── */
-  .err-overlay {
-    position: fixed; z-index: 70;
-    inset: 0;
-    display: flex; align-items: center; justify-content: center;
-    padding: 24px;
-    background: rgba(0,0,0,0.42);
-  }
-
-  .err-modal {
-    width: min(calc(100vw - 40px), 430px);
-    display: flex; flex-direction: column; align-items: center; gap: 14px;
-    padding: 28px 22px 22px;
-    border-radius: 22px;
-    background: var(--surface); color: var(--t1);
-    border: 1px solid rgba(220,38,38,0.18);
-    box-shadow: var(--sh3);
-    text-align: center;
-  }
-
-  .err-modal-icon {
-    width: 42px; height: 42px; border-radius: 50%;
-    display: grid; place-items: center;
-    color: var(--red); background: var(--red-bg);
-  }
-  .err-modal-title { margin: 0; font-size: 18px; font-weight: 800; }
-  .err-modal-msg { margin: 0; font-size: 14px; color: var(--t2); line-height: 1.6; overflow-wrap: anywhere; }
-  .err-modal-model {
-    width: 100%;
-    margin: 2px 0 0; padding: 11px 13px;
-    border-radius: var(--r-s);
-    color: var(--t2); background: var(--raised);
-    font-size: 12px; font-weight: 600; font-family: ui-monospace, monospace;
-    overflow-wrap: anywhere;
-  }
-  .err-modal-close {
-    width: 100%; height: 42px; margin-top: 2px;
-    border-radius: 999px;
-    background: var(--accent); color: #fff;
-    font-size: 14px; font-weight: 800;
-    min-height: 0; min-width: 0;
-    transition: background 110ms ease;
-  }
-  .err-modal-close:active { background: #4c1d95; }
-
-  /* ── Hover states ── */
-  @media (hover: hover) {
-    .copy-btn:hover { background: var(--accent-bg); color: var(--accent); }
-    .memo-card:hover { background: var(--raised); }
-    .action-card:hover { border-color: rgba(91,33,182,0.14); }
-    .tag-btn:hover:not(.on) { background: rgba(0,0,0,0.07); }
-    .ctrl:hover:not(.hi-on) { background: rgba(0,0,0,0.06); }
-  }
-
-  /* ── 강제 레이아웃 토글 (헤더 버튼) ── */
-
-  /* 강제 가로모드: .app은 세로 중앙 정렬 + 상하 패딩 */
-  .app:has(.frame.force-landscape) {
-    align-items: center;
-    padding: 24px 32px;
-    box-sizing: border-box;
-  }
-
-  /* 가로 모드: 2열 그리드 — 좌(헤더+목록) | 우(입력) */
-  .frame.force-landscape {
-    display: grid !important;
-    flex-direction: unset !important;
-    width: 100% !important;
-    max-width: 1080px !important;
-    height: calc(100dvh - 48px) !important;
-    border-radius: 20px !important;
-    border: 1px solid var(--border-2);
-    box-shadow: var(--sh3);
-    overflow: hidden;
-    grid-template-columns: 1fr 420px;
-    grid-template-rows: auto 1fr;
-    grid-template-areas:
-      "hdr      composer"
-      "stage    composer";
-    background: var(--bg);
-  }
-
-  /* 가로 모드: 헤더(좌상단) — 일반 헤더처럼 가로로 */
-  .frame.force-landscape .hdr {
-    grid-area: hdr;
-    width: 100%; height: auto;
-    padding-top: 0;
-    border-bottom: 1px solid var(--border);
-    border-right: none;
-    border-radius: 0;
-    background: var(--bg);
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-    overflow: visible;
-  }
-  .frame.force-landscape .hdr .hdr-body {
-    height: auto;
-    padding: 14px 16px 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 11px;
-  }
-
-  /* 가로 모드: 목록(좌하단) */
-  .frame.force-landscape .stage {
-    grid-area: stage;
-    flex: none;
-    width: 100%;
-    height: 100%;
-    overflow-y: auto;
-    overflow-x: hidden;
-    padding: 16px 20px;
-    background: var(--bg);
-  }
-  .frame.force-landscape .memo-list,
-  .frame.force-landscape .action-list,
-  .frame.force-landscape .skel-wrap {
-    max-width: none;
-  }
-
-  /* 가로 모드: 입력 패널(우측 전체) */
-  .frame.force-landscape .composer {
-    grid-area: composer;
-    width: 100%; height: 100%;
-    border-top: none; border-bottom: none;
-    border-left: 1px solid var(--border-2);
-    border-radius: 0;
-    box-shadow: none;
-    background: var(--surface);
-    padding: 20px 18px;
-    overflow-y: auto;
-    overflow-x: hidden;
-  }
-  .frame.force-landscape .handle { display: none; }
-  /* 날짜·긴급성 컨트롤 — landscape media query의 column 방향을 row로 되돌림 */
-  .frame.force-landscape .action-ctrl { flex-direction: row !important; }
-
-  /* 세로 모드: 미디어쿼리 landscape 규칙 강제 취소 */
-  .frame.force-portrait {
-    display: flex !important;
-    flex-direction: column !important;
-    width: min(100vw, 430px) !important;
-    height: 100dvh !important;
-    max-width: none !important;
-    border-radius: 0 !important;
-    overflow: hidden;
-    grid-template-columns: unset !important;
-    grid-template-areas: unset !important;
-    background: transparent;
-  }
-  .frame.force-portrait .hdr {
-    grid-area: unset !important;
-    width: 100% !important; height: auto !important;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-    overflow: visible;
-  }
-  .frame.force-portrait .hdr .hdr-body {
-    height: auto !important;
-    padding: 14px 16px 12px !important;
-    display: flex !important;
-    flex-direction: column !important;
-    gap: 11px !important;
-  }
-  .frame.force-portrait .stage {
-    grid-area: unset !important;
-    flex: 1 !important;
-    width: 100% !important; height: auto !important;
-    padding: 14px 14px calc(16px + env(safe-area-inset-bottom)) !important;
-  }
-  .frame.force-portrait .composer {
-    grid-area: unset !important;
-    flex-shrink: 0 !important;
-    width: 100% !important; height: auto !important;
-    border-left: none;
-    border-top: none;
-    border-bottom: 1px solid var(--border);
-    box-shadow: 0 3px 14px rgba(0,0,0,0.05);
-    padding: 12px 16px 14px !important;
-    overflow: visible !important;
-  }
-  .frame.force-portrait .memo-list,
-  .frame.force-portrait .action-list,
-  .frame.force-portrait .skel-wrap {
-    max-width: none;
-  }
-  .frame.force-portrait .action-ctrl { flex-direction: row !important; }
-
-  /* ── 크롭 모달 ── */
-  .crop-overlay {
-    position: fixed; inset: 0; z-index: 210;
-    background: rgba(0,0,0,0.88);
-    display: flex; align-items: center; justify-content: center;
-    padding: 16px;
-  }
-  .crop-modal {
-    width: 100%; max-width: 680px;
-    background: #1a1a1a;
-    border-radius: 20px; overflow: hidden;
-    display: flex; flex-direction: column;
-    max-height: calc(100dvh - 32px);
-  }
-  .crop-modal-hdr {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.1);
-    flex-shrink: 0;
-  }
-  .crop-modal-hdr h2 {
-    margin: 0; font-size: 14px; font-weight: 700; color: #fff;
-  }
-  .crop-modal-hdr h2 span {
-    font-weight: 400; font-size: 12px; color: rgba(255,255,255,0.45); margin-left: 6px;
-  }
-  .crop-close-btn {
-    display: grid; place-items: center;
-    width: 28px; height: 28px; border-radius: 50%;
-    color: rgba(255,255,255,0.6); background: rgba(255,255,255,0.1);
-    transition: background 110ms ease;
-  }
-  .crop-close-btn:hover { background: rgba(255,255,255,0.18); }
-  .crop-canvas-wrap {
-    flex: 1; min-height: 0; overflow: hidden;
-    display: flex; align-items: center; justify-content: center;
-    background: #000; position: relative;
-  }
-  .crop-canvas {
-    display: block;
-    max-width: 100%;
-    max-height: calc(100dvh - 180px);
-    cursor: crosshair;
-    touch-action: none;
-    user-select: none; -webkit-user-select: none;
-  }
-  .crop-modal-footer {
-    display: flex; gap: 8px; padding: 12px 16px;
-    border-top: 1px solid rgba(255,255,255,0.1); flex-shrink: 0;
-  }
-  .crop-cancel-btn {
-    height: 40px; padding: 0 16px; border-radius: 999px;
-    background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.75);
-    font-size: 13px; font-weight: 600; min-height: 0;
-    transition: background 110ms ease;
-  }
-  .crop-cancel-btn:hover { background: rgba(255,255,255,0.14); }
-  .crop-reset-btn {
-    height: 40px; padding: 0 16px; border-radius: 999px;
-    background: transparent; color: rgba(255,255,255,0.55);
-    border: 1px solid rgba(255,255,255,0.18);
-    font-size: 13px; font-weight: 600; min-height: 0;
-    transition: background 110ms ease, color 110ms ease;
-  }
-  .crop-reset-btn:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.8); }
-  .crop-apply-btn {
-    flex: 1; height: 40px; border-radius: 999px;
-    background: var(--accent); color: #fff;
-    font-size: 13px; font-weight: 700; min-height: 0;
-    transition: background 110ms ease;
-  }
-  .crop-apply-btn:hover { background: var(--accent-mid); }
-  .crop-save-btn {
-    flex: 1; height: 40px; border-radius: 999px;
-    background: rgba(255,255,255,0.12); color: rgba(255,255,255,0.85);
-    font-size: 13px; font-weight: 700; min-height: 0;
-    transition: background 110ms ease;
-  }
-  .crop-save-btn:hover { background: rgba(255,255,255,0.2); }
-`;
+// ─── Hooks ───────────────────────────────────────────────────────────────────
+
+function useFocusTrap(ref) {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const prevFocused = document.activeElement;
+    const focusable = Array.from(el.querySelectorAll(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    ));
+    const first = focusable[0];
+    const last  = focusable[focusable.length - 1];
+    first?.focus();
+    const onKeyDown = (e) => {
+      if (e.key !== "Tab") return;
+      if (e.shiftKey) {
+        if (document.activeElement === first) { e.preventDefault(); last?.focus(); }
+      } else {
+        if (document.activeElement === last)  { e.preventDefault(); first?.focus(); }
+      }
+    };
+    el.addEventListener("keydown", onKeyDown);
+    return () => {
+      el.removeEventListener("keydown", onKeyDown);
+      prevFocused?.focus();
+    };
+  }, [ref]);
+}
+
+function useAiCorrection({ memoText, actionText, setMemoText, setActionText, hasHydrated }) {
+  const [aiSettings,        setAiSettings]       = useState({ apiKey: "", model: DEFAULT_AI_MODEL });
+  const [aiStatus,          setAiStatus]         = useState({ state: "idle", message: `Gemini · ${DEFAULT_AI_MODEL}` });
+  const [aiError,           setAiError]          = useState(null);
+  const [pendingCorrection, setPendingCorrection] = useState(null);
+  const [rateLimitInfo,     setRateLimitInfo]    = useState(null);
+  const [rateLimitSec,      setRateLimitSec]     = useState(0);
+
+  useEffect(() => {
+    if (rateLimitInfo?.type !== "rpm") { setRateLimitSec(0); return; }
+    const update = () => {
+      const sec = Math.ceil((rateLimitInfo.until - Date.now()) / 1000);
+      if (sec <= 0) { setRateLimitSec(0); setRateLimitInfo(null); }
+      else setRateLimitSec(sec);
+    };
+    update();
+    const id = setInterval(update, 1000);
+    return () => clearInterval(id);
+  }, [rateLimitInfo]);
+
+  useEffect(() => {
+    if (!hasHydrated.current) return;
+    saveJson(AI_SETTINGS_STORAGE_KEY, { model: normalizeModel(aiSettings.model) });
+    saveSessionValue(AI_API_KEY_SESSION_KEY, aiSettings.apiKey);
+  }, [aiSettings]);
+
+  const correctDraft = useCallback(async (type, openSettings, mode = DEFAULT_AI_CORRECTION_MODE) => {
+    const text = type === "memos" ? memoText.trim() : actionText.trim();
+    if (!text) return;
+
+    if (!aiSettings.apiKey) {
+      setAiStatus({ state: "error", message: "API 키 필요" });
+      openSettings();
+      return;
+    }
+
+    const modeConfig = AI_CORRECTION_MODES.find((m) => m.key === mode) ?? AI_CORRECTION_MODES[0];
+
+    setAiError(null);
+    const fallbacks = getModelFallbacks(normalizeModel(aiSettings.model));
+    let lastError = null;
+    let lastModel = fallbacks.at(-1) ?? DEFAULT_AI_MODEL;
+
+    for (let i = 0; i < fallbacks.length; i++) {
+      const model = fallbacks[i];
+      lastModel = model;
+      setAiSettings((s) => ({ ...s, model }));
+      setAiStatus({
+        state: "loading",
+        message: i === 0 ? `${modeConfig.label} 중…` : `${model} 재시도 중…`,
+      });
+
+      try {
+        const corrected = await correctKorean({ apiKey: aiSettings.apiKey, model, text, mode });
+        if (modeConfig.modal && type === "memos") {
+          setPendingCorrection({ original: text, corrected, mode: modeConfig.key });
+          setAiStatus({ state: "success", message: `${modeConfig.label} 제안 준비됨 ✓` });
+        } else {
+          if (type === "memos") setMemoText(corrected);
+          else setActionText(corrected);
+          setAiStatus({ state: "success", message: "교정 완료 ✓" });
+        }
+        setTimeout(() => setAiStatus({ state: "idle", message: `Gemini · ${model}` }), 2500);
+        return;
+      } catch (err) {
+        if (err.status === 429 && (err.limitType ?? "unknown") === "rpd") {
+          setRateLimitInfo({ type: "rpd" });
+          setAiStatus({ state: "rate-limited", message: "요청 한도 초과" });
+          return;
+        }
+        lastError = err;
+      }
+    }
+
+    if (lastError?.status === 429) {
+      const limitType = lastError.limitType ?? "unknown";
+      if (limitType === "rpm") {
+        setRateLimitInfo({ type: "rpm", until: Date.now() + (lastError.retryAfter ?? 60) * 1000 });
+      } else {
+        setRateLimitInfo({ type: limitType });
+      }
+      setAiStatus({ state: "rate-limited", message: "요청 한도 초과" });
+      return;
+    }
+
+    openSettings();
+    const message = lastError instanceof Error ? lastError.message : "교정 실패";
+    setAiStatus({ state: "error", message });
+    setAiError({ model: lastModel, message, type: "correction" });
+  }, [memoText, actionText, aiSettings, setMemoText, setActionText]);
+
+  return {
+    aiSettings, setAiSettings,
+    aiStatus, setAiStatus,
+    aiError, setAiError,
+    pendingCorrection, setPendingCorrection,
+    rateLimitInfo, setRateLimitInfo,
+    rateLimitSec,
+    correctDraft,
+  };
+}
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -2348,6 +1404,8 @@ function UndoToast({ msg, onUndo }) {
 }
 
 function ErrorModal({ error, onClose }) {
+  const modalRef = useRef(null);
+  useFocusTrap(modalRef);
   return (
     <motion.div
       className="err-overlay"
@@ -2358,6 +1416,7 @@ function ErrorModal({ error, onClose }) {
       onClick={onClose}
     >
       <motion.div
+        ref={modalRef}
         className="err-modal"
         initial={{ opacity: 0, scale: 0.96, y: 12 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -2383,6 +1442,8 @@ function ErrorModal({ error, onClose }) {
 
 // 문장 교정 결과 모달
 function CorrectionModal({ original, corrected, onApply, onCancel, title = "문장 교정 제안", correctedLabel = "교정 제안" }) {
+  const modalRef = useRef(null);
+  useFocusTrap(modalRef);
   return (
     <motion.div
       className="correction-overlay"
@@ -2393,6 +1454,7 @@ function CorrectionModal({ original, corrected, onApply, onCancel, title = "문�
       onClick={onCancel}
     >
       <motion.div
+        ref={modalRef}
         className="correction-modal"
         initial={{ opacity: 0, scale: 0.96, y: 12 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -2429,6 +1491,8 @@ function CorrectionModal({ original, corrected, onApply, onCancel, title = "문�
 // ─── CropModal ───────────────────────────────────────────────────────────────
 
 function CropModal({ dataUrl, mimeType, onCrop, onCancel }) {
+  const modalRef  = useRef(null);
+  useFocusTrap(modalRef);
   const canvasRef = useRef(null);
   const imgRef    = useRef(null);
   const cropRef   = useRef(null); // { x1, y1, x2, y2 } in canvas px
@@ -2588,17 +1652,17 @@ function CropModal({ dataUrl, mimeType, onCrop, onCancel }) {
     dragRef.current = null;
   };
 
-  // ── 크롭 적용 → OCR ──
-  const handleApply = () => {
-    const c   = cropRef.current;
-    const img = imgRef.current;
+  // ── 크롭 영역을 Canvas로 렌더링해 반환 ──
+  const getCroppedCanvas = () => {
+    const c      = cropRef.current;
+    const img    = imgRef.current;
     const canvas = canvasRef.current;
-    if (!img) return;
+    if (!img) return null;
 
-    const out = document.createElement("canvas");
-    const ctx = out.getContext("2d");
-
+    const out    = document.createElement("canvas");
+    const ctx    = out.getContext("2d");
     const MAX_PX = 1400;
+
     if (!c) {
       const scale = Math.min(1, MAX_PX / img.naturalWidth, MAX_PX / img.naturalHeight);
       out.width  = Math.round(img.naturalWidth  * scale);
@@ -2617,8 +1681,16 @@ function CropModal({ dataUrl, mimeType, onCrop, onCancel }) {
     }
 
     const outMime = mimeType === "image/png" ? "image/png" : "image/jpeg";
-    const result  = out.toDataURL(outMime, outMime === "image/jpeg" ? 0.92 : undefined);
-    onCrop(result.split(",")[1], outMime);
+    return { out, outMime };
+  };
+
+  // ── 크롭 적용 → OCR ──
+  const handleApply = () => {
+    const result = getCroppedCanvas();
+    if (!result) return;
+    const { out, outMime } = result;
+    const dataUrl = out.toDataURL(outMime, outMime === "image/jpeg" ? 0.92 : undefined);
+    onCrop(dataUrl.split(",")[1], outMime);
   };
 
   return (
@@ -2629,6 +1701,7 @@ function CropModal({ dataUrl, mimeType, onCrop, onCancel }) {
       onClick={onCancel}
     >
       <motion.div
+        ref={modalRef}
         className="crop-modal"
         initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, y: 16 }}
@@ -2653,30 +1726,9 @@ function CropModal({ dataUrl, mimeType, onCrop, onCancel }) {
           <button type="button" className="crop-cancel-btn" onClick={onCancel}>취소</button>
           <button type="button" className="crop-reset-btn" onClick={initCrop}>초기화</button>
           <button type="button" className="crop-save-btn" onClick={async () => {
-            const c   = cropRef.current;
-            const img = imgRef.current;
-            const canvas = canvasRef.current;
-            if (!img) return;
-            const out = document.createElement("canvas");
-            const ctx = out.getContext("2d");
-            const MAX_PX = 1400;
-            if (!c) {
-              const scale = Math.min(1, MAX_PX / img.naturalWidth, MAX_PX / img.naturalHeight);
-              out.width  = Math.round(img.naturalWidth  * scale);
-              out.height = Math.round(img.naturalHeight * scale);
-              ctx.drawImage(img, 0, 0, out.width, out.height);
-            } else {
-              const sx = img.naturalWidth  / canvas.width;
-              const sy = img.naturalHeight / canvas.height;
-              const { x1, y1, x2, y2 } = c;
-              const cropW = (x2 - x1) * sx;
-              const cropH = (y2 - y1) * sy;
-              const scale = Math.min(1, MAX_PX / cropW, MAX_PX / cropH);
-              out.width  = Math.round(cropW * scale);
-              out.height = Math.round(cropH * scale);
-              ctx.drawImage(img, x1 * sx, y1 * sy, cropW, cropH, 0, 0, out.width, out.height);
-            }
-            const outMime = mimeType === "image/png" ? "image/png" : "image/jpeg";
+            const result = getCroppedCanvas();
+            if (!result) return;
+            const { out, outMime } = result;
             const ext     = outMime === "image/png" ? "png" : "jpg";
             const dataUrl = out.toDataURL(outMime, outMime === "image/jpeg" ? 0.92 : undefined);
             try {
@@ -2719,19 +1771,24 @@ export default function IntelliMemoApp() {
   const [tagFilter,      setTagFilter]      = useState("all");
   const [searchQuery,    setSearchQuery]    = useState("");
   const [searchOpen,     setSearchOpen]     = useState(false);
-  const [rateLimitInfo,  setRateLimitInfo]  = useState(null); // { type: "rpm"|"rpd"|"unknown", until?: number }
-  const [rateLimitSec,   setRateLimitSec]   = useState(0);
-  const [aiSettings,       setAiSettings]       = useState({ apiKey: "", model: DEFAULT_AI_MODEL });
-  const [aiStatus,         setAiStatus]         = useState({ state: "idle", message: `Gemini · ${DEFAULT_AI_MODEL}` });
-  const [aiError,          setAiError]          = useState(null);
-  const [pendingCorrection, setPendingCorrection] = useState(null); // { original, corrected }
-  const [toast,          setToast]          = useState(null); // { msg, undo }
+  const [toast,          setToast]          = useState(null);
   const [isLoaded,       setIsLoaded]       = useState(false);
   const [scrollTop,      setScrollTop]      = useState(0);
   const [tick,           setTick]           = useState(Date.now());
 
-  const hasHydrated = useRef(false);
-  const toastTimer  = useRef(null);
+  const hasHydrated  = useRef(false);
+  const toastTimer   = useRef(null);
+  const scrollRafRef = useRef(null);
+
+  const {
+    aiSettings, setAiSettings,
+    aiStatus, setAiStatus,
+    aiError, setAiError,
+    pendingCorrection, setPendingCorrection,
+    rateLimitInfo, setRateLimitInfo,
+    rateLimitSec,
+    correctDraft,
+  } = useAiCorrection({ memoText, actionText, setMemoText, setActionText, hasHydrated });
 
   // ── Hydrate ──
   useEffect(() => {
@@ -2768,19 +1825,6 @@ export default function IntelliMemoApp() {
     return () => mq.removeEventListener("change", handler);
   }, []);
 
-  // ── Rate limit countdown (RPM 전용) ──
-  useEffect(() => {
-    if (rateLimitInfo?.type !== "rpm") { setRateLimitSec(0); return; }
-    const update = () => {
-      const sec = Math.ceil((rateLimitInfo.until - Date.now()) / 1000);
-      if (sec <= 0) { setRateLimitSec(0); setRateLimitInfo(null); }
-      else setRateLimitSec(sec);
-    };
-    update();
-    const id = setInterval(update, 1000);
-    return () => clearInterval(id);
-  }, [rateLimitInfo]);
-
   // ── Tick ──
   useEffect(() => {
     const id = setInterval(() => setTick(Date.now()), 30_000);
@@ -2788,13 +1832,8 @@ export default function IntelliMemoApp() {
   }, []);
 
   // ── Persist ──
-  useEffect(() => { if (hasHydrated.current) saveJson("memos",      memos);      }, [memos]);
-  useEffect(() => { if (hasHydrated.current) saveJson("actions",    actions);    }, [actions]);
-  useEffect(() => {
-    if (!hasHydrated.current) return;
-    saveJson(AI_SETTINGS_STORAGE_KEY, { model: normalizeModel(aiSettings.model) });
-    saveSessionValue(AI_API_KEY_SESSION_KEY, aiSettings.apiKey);
-  }, [aiSettings]);
+  useEffect(() => { if (hasHydrated.current) saveJson("memos",   memos);   }, [memos]);
+  useEffect(() => { if (hasHydrated.current) saveJson("actions", actions); }, [actions]);
 
   // ── Toast helper ──
   const showToast = useCallback((msg, undoFn) => {
@@ -2893,78 +1932,19 @@ export default function IntelliMemoApp() {
     setActions((cur) => cur.map((a) => a.id === id ? { ...a, done: !a.done } : a));
   }, []);
 
-  // ── AI correction ──
-  const correctDraft = useCallback(async (type, openSettings, mode = DEFAULT_AI_CORRECTION_MODE) => {
-    const text = type === "memos" ? memoText.trim() : actionText.trim();
-    if (!text) return;
-
-    if (!aiSettings.apiKey) {
-      setAiStatus({ state: "error", message: "API 키 필요" });
-      openSettings();
-      return;
-    }
-
-    const modeConfig = AI_CORRECTION_MODES.find((m) => m.key === mode) ?? AI_CORRECTION_MODES[0];
-
-    setAiError(null);
-    const fallbacks = getModelFallbacks(normalizeModel(aiSettings.model));
-    let lastError = null;
-    let lastModel = fallbacks.at(-1) ?? DEFAULT_AI_MODEL;
-
-    for (let i = 0; i < fallbacks.length; i++) {
-      const model = fallbacks[i];
-      lastModel = model;
-      setAiSettings((s) => ({ ...s, model }));
-      setAiStatus({
-        state: "loading",
-        message: i === 0 ? `${modeConfig.label} 중…` : `${model} 재시도 중…`,
-      });
-
-      try {
-        const corrected = await correctKorean({ apiKey: aiSettings.apiKey, model, text, mode });
-        if (modeConfig.modal && type === "memos") {
-          setPendingCorrection({ original: text, corrected, mode: modeConfig.key });
-          setAiStatus({ state: "success", message: `${modeConfig.label} 제안 준비됨 ✓` });
-        } else {
-          if (type === "memos") setMemoText(corrected);
-          else setActionText(corrected);
-          setAiStatus({ state: "success", message: "교정 완료 ✓" });
-        }
-        setTimeout(() => setAiStatus({ state: "idle", message: `Gemini · ${model}` }), 2500);
-        return;
-      } catch (err) {
-        if (err.status === 429 && (err.limitType ?? "unknown") === "rpd") {
-          setRateLimitInfo({ type: "rpd" });
-          setAiStatus({ state: "rate-limited", message: "요청 한도 초과" });
-          return;
-        }
-        lastError = err;
-      }
-    }
-
-    if (lastError?.status === 429) {
-      const limitType = lastError.limitType ?? "unknown";
-      if (limitType === "rpm") {
-        setRateLimitInfo({ type: "rpm", until: Date.now() + (lastError.retryAfter ?? 60) * 1000 });
-      } else {
-        setRateLimitInfo({ type: limitType });
-      }
-      setAiStatus({ state: "rate-limited", message: "요청 한도 초과" });
-      return;
-    }
-
-    openSettings();
-    const message = lastError instanceof Error ? lastError.message : "교정 실패";
-    setAiStatus({ state: "error", message });
-    setAiError({ model: lastModel, message, type: "correction" });
-  }, [memoText, actionText, aiSettings]);
+  const handleScroll = useCallback((e) => {
+    const top = e.currentTarget.scrollTop;
+    if (scrollRafRef.current !== null) return;
+    scrollRafRef.current = requestAnimationFrame(() => {
+      setScrollTop(top);
+      scrollRafRef.current = null;
+    });
+  }, []);
 
   const frameClass = `frame force-${layoutMode}`;
 
   return (
     <main className="app">
-      <style>{CSS}</style>
-
       <div className={frameClass}>
         <Header
           activeView={activeView}
@@ -3004,7 +1984,7 @@ export default function IntelliMemoApp() {
 
         <section
           className="stage"
-          onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+          onScroll={handleScroll}
         >
           <AnimatePresence mode="wait" initial={false}>
             {activeView === "memos" ? (
