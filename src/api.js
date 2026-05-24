@@ -1,5 +1,43 @@
 import { AI_CORRECTION_MODES, DEFAULT_AI_CORRECTION_MODE } from "./constants.js";
-import { extractText, parseRetryAfter, detectRateLimitType, apiError } from "./utils.js";
+import {
+  detectRateLimitType,
+  extractOpenAiText,
+  extractText,
+  geminiApiError,
+  openAiApiError,
+  parseRetryAfter,
+} from "./utils.js";
+
+export const callOpenAiApi = async ({ apiKey, body }) => {
+  let res;
+  try {
+    res = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    throw new Error(e instanceof TypeError ? "네트워크 연결을 확인하세요." : "OpenAI API 호출 실패");
+  }
+
+  if (!res.ok) {
+    const rawBody = await res.text();
+    let rawMsg = rawBody;
+    try { const p = JSON.parse(rawBody); rawMsg = p?.error?.message || rawBody; } catch {}
+    const ra  = res.headers.get("Retry-After");
+    const err = new Error(openAiApiError(res.status, rawBody));
+    err.status = res.status;
+    const retryAfterSec = parseRetryAfter(ra);
+    if (retryAfterSec) err.retryAfter = retryAfterSec;
+    if (res.status === 429) err.limitType = detectRateLimitType(rawMsg, ra);
+    throw err;
+  }
+
+  return res.json();
+};
 
 export const callGeminiApi = async ({ apiKey, model, body }) => {
   let res;
@@ -21,7 +59,7 @@ export const callGeminiApi = async ({ apiKey, model, body }) => {
     let rawMsg = rawBody;
     try { const p = JSON.parse(rawBody); rawMsg = p?.error?.message || rawBody; } catch {}
     const ra  = res.headers.get("Retry-After");
-    const err = new Error(apiError(res.status, rawBody));
+    const err = new Error(geminiApiError(res.status, rawBody));
     err.status = res.status;
     const retryAfterSec = parseRetryAfter(ra);
     if (retryAfterSec) err.retryAfter = retryAfterSec;
@@ -34,16 +72,21 @@ export const callGeminiApi = async ({ apiKey, model, body }) => {
 
 export const correctKorean = async ({ apiKey, model, text, mode = DEFAULT_AI_CORRECTION_MODE }) => {
   const modeConfig = AI_CORRECTION_MODES.find((m) => m.key === mode) ?? AI_CORRECTION_MODES[0];
-  const data = await callGeminiApi({
-    apiKey, model,
+  const data = await callOpenAiApi({
+    apiKey,
     body: {
-      contents: [{ role: "user", parts: [{ text: modeConfig.prompt(text) }] }],
-      generationConfig: { maxOutputTokens: 1024, temperature: 0.2 },
+      model,
+      instructions: "You transform short memo drafts. Return only the requested final text, with no labels, explanations, markdown, or alternatives.",
+      input: modeConfig.prompt(text),
+      max_output_tokens: 1024,
+      reasoning: { effort: "low" },
+      text: { format: { type: "text" }, verbosity: "low" },
+      store: false,
     },
   });
-  if ((data.candidates ?? []).some((c) => c.finishReason === "MAX_TOKENS"))
+  if (data.status === "incomplete" && data.incomplete_details?.reason === "max_output_tokens")
     throw new Error("결과가 너무 길어 중단됐습니다. 텍스트를 나눠서 교정하세요.");
-  const corrected = extractText(data);
+  const corrected = extractOpenAiText(data);
   if (!corrected) throw new Error("교정 결과가 비어 있습니다.");
   return corrected;
 };

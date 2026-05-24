@@ -3,10 +3,13 @@ import './src/app.css';
 import { AnimatePresence, motion } from "framer-motion";
 
 import {
-  AI_SETTINGS_STORAGE_KEY,
-  AI_API_KEY_SESSION_KEY,
-  DEFAULT_AI_MODEL,
   DEFAULT_TAG,
+  DEFAULT_OCR_MODEL,
+  DEFAULT_OPENAI_MODEL,
+  OCR_API_KEY_SESSION_KEY,
+  OCR_SETTINGS_STORAGE_KEY,
+  OPENAI_API_KEY_SESSION_KEY,
+  OPENAI_SETTINGS_STORAGE_KEY,
   TAGS,
   UNDO_DELAY_MS,
 } from "./src/constants.js";
@@ -15,9 +18,11 @@ import {
   dateGroupLabel,
   loadJson,
   loadSessionValue,
-  normalizeModel,
+  normalizeOcrModel,
+  normalizeOpenAiModel,
   nowIso,
   saveJson,
+  saveSessionValue,
 } from "./src/utils.js";
 import { useAiCorrection } from "./src/hooks/useAiCorrection.js";
 import { Header } from "./src/components/Header.jsx";
@@ -43,6 +48,7 @@ export default function IntelliMemoApp() {
   const [actionText,     setActionText]     = useState("");
   const [actionDueDate,  setActionDueDate]  = useState("");
   const [actionPriority, setActionPriority] = useState("normal");
+  const [ocrSettings,    setOcrSettings]    = useState({ apiKey: "", model: DEFAULT_OCR_MODEL });
   const [actionFilter,   setActionFilter]   = useState("all");
   const [tagFilter,      setTagFilter]      = useState("all");
   const [searchQuery,    setSearchQuery]    = useState("");
@@ -70,10 +76,11 @@ export default function IntelliMemoApp() {
   useEffect(() => {
     let alive = true;
     const hydrate = async () => {
-      const [sm, sa, sai] = await Promise.all([
+      const [sm, sa, sai, socr] = await Promise.all([
         loadJson("memos",      []),
         loadJson("actions",    []),
-        loadJson(AI_SETTINGS_STORAGE_KEY, { model: DEFAULT_AI_MODEL }),
+        loadJson(OPENAI_SETTINGS_STORAGE_KEY, { model: DEFAULT_OPENAI_MODEL }),
+        loadJson(OCR_SETTINGS_STORAGE_KEY, { model: DEFAULT_OCR_MODEL }),
       ]);
       if (!alive) return;
 
@@ -81,9 +88,14 @@ export default function IntelliMemoApp() {
       setActions(Array.isArray(sa) ? sa : []);
 
       if (sai && typeof sai === "object") {
-        const model = normalizeModel(sai.model);
-        setAiSettings({ apiKey: loadSessionValue(AI_API_KEY_SESSION_KEY), model });
-        setAiStatus({ state: "idle", message: `Gemini · ${model}` });
+        const model = normalizeOpenAiModel(sai.model);
+        setAiSettings({ apiKey: loadSessionValue(OPENAI_API_KEY_SESSION_KEY), model });
+        setAiStatus({ state: "idle", message: `ChatGPT · ${model}` });
+      }
+
+      if (socr && typeof socr === "object") {
+        const model = normalizeOcrModel(socr.model);
+        setOcrSettings({ apiKey: loadSessionValue(OCR_API_KEY_SESSION_KEY), model });
       }
 
       hasHydrated.current = true;
@@ -110,6 +122,11 @@ export default function IntelliMemoApp() {
   // ── Persist ──
   useEffect(() => { if (hasHydrated.current) saveJson("memos",   memos);   }, [memos]);
   useEffect(() => { if (hasHydrated.current) saveJson("actions", actions); }, [actions]);
+  useEffect(() => {
+    if (!hasHydrated.current) return;
+    saveJson(OCR_SETTINGS_STORAGE_KEY, { model: normalizeOcrModel(ocrSettings.model) });
+    saveSessionValue(OCR_API_KEY_SESSION_KEY, ocrSettings.apiKey);
+  }, [ocrSettings]);
 
   // ── Toast helper ──
   const showToast = useCallback((msg, undoFn) => {
@@ -247,6 +264,7 @@ export default function IntelliMemoApp() {
           actionPriority={actionPriority} setActionPriority={setActionPriority}
           onAddAction={addAction}
           aiSettings={aiSettings}       setAiSettings={setAiSettings}
+          ocrSettings={ocrSettings}     setOcrSettings={setOcrSettings}
           aiStatus={aiStatus}
           onCorrectDraft={correctDraft}
           onOcrError={(err) => setAiError(err)}

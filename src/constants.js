@@ -14,11 +14,20 @@ export const ACTION_FILTERS = [
   { key: "done",   label: "완료" },
 ];
 
-export const DEFAULT_AI_MODEL = "gemini-2.5-flash";
-export const AI_SETTINGS_STORAGE_KEY = "aiSettings";
-export const AI_API_KEY_SESSION_KEY = "aiApiKey";
+export const DEFAULT_OPENAI_MODEL = "gpt-5.5";
+export const OPENAI_SETTINGS_STORAGE_KEY = "openAiSettings";
+export const OPENAI_API_KEY_SESSION_KEY = "openAiApiKey";
 
-export const AI_MODELS = [
+export const OPENAI_MODELS = [
+  { key: "gpt-5.5", label: "GPT-5.5 추천" },
+  { key: "gpt-5.4", label: "GPT-5.4" },
+];
+
+export const DEFAULT_OCR_MODEL = "gemini-2.5-flash";
+export const OCR_SETTINGS_STORAGE_KEY = "aiSettings";
+export const OCR_API_KEY_SESSION_KEY = "aiApiKey";
+
+export const OCR_MODELS = [
   { key: "gemini-2.5-pro",        label: "Gemini 2.5 Pro" },
   { key: "gemini-2.5-flash",      label: "Gemini 2.5 Flash 추천" },
   { key: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite" },

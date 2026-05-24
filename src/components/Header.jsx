@@ -58,9 +58,9 @@ export function Header({
             >
               <RotateCcw size={13} />
             </button>
-            <span className="gemini-badge">
+            <span className="ai-provider-badge">
               <Sparkles size={11} />
-              Gemini AI
+              ChatGPT · Gemini
             </span>
           </div>
         </div>

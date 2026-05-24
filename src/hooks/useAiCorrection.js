@@ -1,17 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AI_CORRECTION_MODES,
-  AI_SETTINGS_STORAGE_KEY,
-  AI_API_KEY_SESSION_KEY,
   DEFAULT_AI_CORRECTION_MODE,
-  DEFAULT_AI_MODEL,
+  DEFAULT_OPENAI_MODEL,
+  OPENAI_API_KEY_SESSION_KEY,
+  OPENAI_SETTINGS_STORAGE_KEY,
 } from "../constants.js";
-import { getModelFallbacks, normalizeModel, saveJson, saveSessionValue } from "../utils.js";
+import {
+  getOpenAiModelFallbacks,
+  normalizeOpenAiModel,
+  saveJson,
+  saveSessionValue,
+} from "../utils.js";
 import { correctKorean } from "../api.js";
 
 export function useAiCorrection({ memoText, actionText, setMemoText, setActionText, hasHydrated }) {
-  const [aiSettings,        setAiSettings]       = useState({ apiKey: "", model: DEFAULT_AI_MODEL });
-  const [aiStatus,          setAiStatus]         = useState({ state: "idle", message: `Gemini · ${DEFAULT_AI_MODEL}` });
+  const [aiSettings,        setAiSettings]       = useState({ apiKey: "", model: DEFAULT_OPENAI_MODEL });
+  const [aiStatus,          setAiStatus]         = useState({ state: "idle", message: `ChatGPT · ${DEFAULT_OPENAI_MODEL}` });
   const [aiError,           setAiError]          = useState(null);
   const [pendingCorrection, setPendingCorrection] = useState(null);
   const [rateLimitInfo,     setRateLimitInfo]    = useState(null);
@@ -32,8 +37,8 @@ export function useAiCorrection({ memoText, actionText, setMemoText, setActionTe
 
   useEffect(() => {
     if (!hasHydrated.current) return;
-    saveJson(AI_SETTINGS_STORAGE_KEY, { model: normalizeModel(aiSettings.model) });
-    saveSessionValue(AI_API_KEY_SESSION_KEY, aiSettings.apiKey);
+    saveJson(OPENAI_SETTINGS_STORAGE_KEY, { model: normalizeOpenAiModel(aiSettings.model) });
+    saveSessionValue(OPENAI_API_KEY_SESSION_KEY, aiSettings.apiKey);
   }, [aiSettings]);
 
   const correctDraft = useCallback(async (type, openSettings, mode = DEFAULT_AI_CORRECTION_MODE) => {
@@ -50,9 +55,9 @@ export function useAiCorrection({ memoText, actionText, setMemoText, setActionTe
 
     clearTimeout(idleTimerRef.current);
     setAiError(null);
-    const fallbacks = getModelFallbacks(normalizeModel(aiSettings.model));
+    const fallbacks = getOpenAiModelFallbacks(normalizeOpenAiModel(aiSettings.model));
     let lastError = null;
-    let lastModel = fallbacks.at(-1) ?? DEFAULT_AI_MODEL;
+    let lastModel = fallbacks.at(-1) ?? DEFAULT_OPENAI_MODEL;
 
     for (let i = 0; i < fallbacks.length; i++) {
       const model = fallbacks[i];
@@ -73,7 +78,7 @@ export function useAiCorrection({ memoText, actionText, setMemoText, setActionTe
           else setActionText(corrected);
           setAiStatus({ state: "success", message: "교정 완료 ✓" });
         }
-        idleTimerRef.current = setTimeout(() => setAiStatus({ state: "idle", message: `Gemini · ${model}` }), 2500);
+        idleTimerRef.current = setTimeout(() => setAiStatus({ state: "idle", message: `ChatGPT · ${model}` }), 2500);
         return;
       } catch (err) {
         if (err.status === 429 && (err.limitType ?? "unknown") === "rpd") {

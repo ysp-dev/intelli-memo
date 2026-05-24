@@ -14,12 +14,13 @@ import {
 import {
   AI_CORRECTION_GROUPS,
   AI_CORRECTION_MODES,
-  AI_MODELS,
   DEFAULT_AI_CORRECTION_MODE,
-  DEFAULT_AI_MODEL,
+  DEFAULT_OCR_MODEL,
+  OCR_MODELS,
+  OPENAI_MODELS,
   TAGS,
 } from "../constants.js";
-import { getModelFallbacks, normalizeModel } from "../utils.js";
+import { getOcrModelFallbacks, normalizeOcrModel } from "../utils.js";
 import { extractTextFromImage } from "../api.js";
 import { useAutoResize } from "../hooks/useAutoResize.js";
 import { CropModal } from "./modals/CropModal.jsx";
@@ -34,6 +35,7 @@ export function Composer({
   actionPriority, setActionPriority,
   onAddAction,
   aiSettings, setAiSettings,
+  ocrSettings, setOcrSettings,
   aiStatus,
   onCorrectDraft,
   onOcrError,
@@ -54,12 +56,12 @@ export function Composer({
   const correcting = aiStatus.state === "loading";
 
   const handleCameraClick = () => {
-    if (!aiSettings.apiKey) { setAiOpen(true); return; }
+    if (!ocrSettings.apiKey) { setAiOpen(true); return; }
     cameraRef.current?.click();
   };
 
   const handleGalleryClick = () => {
-    if (!aiSettings.apiKey) { setAiOpen(true); return; }
+    if (!ocrSettings.apiKey) { setAiOpen(true); return; }
     galleryRef.current?.click();
   };
 
@@ -86,7 +88,7 @@ export function Composer({
       .find((item) => item.kind === "file" && item.type.startsWith("image/"));
     if (!imageItem) return;
     e.preventDefault();
-    if (!aiSettings.apiKey) { setAiOpen(true); return; }
+    if (!ocrSettings.apiKey) { setAiOpen(true); return; }
     handleImageFile(imageItem.getAsFile());
   };
 
@@ -94,16 +96,16 @@ export function Composer({
     setCropData(null);
     setOcrState("scanning");
 
-    const fallbacks = getModelFallbacks(normalizeModel(aiSettings.model));
+    const fallbacks = getOcrModelFallbacks(normalizeOcrModel(ocrSettings.model));
     let lastError = null;
-    let lastModel = fallbacks.at(-1) ?? DEFAULT_AI_MODEL;
+    let lastModel = fallbacks.at(-1) ?? DEFAULT_OCR_MODEL;
 
     for (let i = 0; i < fallbacks.length; i++) {
       const model = fallbacks[i];
       lastModel = model;
-      setAiSettings((s) => ({ ...s, model }));
+      setOcrSettings((s) => ({ ...s, model }));
       try {
-        const extracted = await extractTextFromImage({ apiKey: aiSettings.apiKey, model, base64, mimeType });
+        const extracted = await extractTextFromImage({ apiKey: ocrSettings.apiKey, model, base64, mimeType });
         if (!extracted.trim()) {
           setOcrState("error");
           setTimeout(() => setOcrState("idle"), 2000);
@@ -408,7 +410,7 @@ export function Composer({
             {rateLimitInfo.type === "rpm"
               ? `⏱ ${rateLimitSec}초 후 재시도 가능`
               : rateLimitInfo.type === "rpd"
-                ? "일일 요청 한도 초과 · 내일 오후 4~5시 이후 이용 가능"
+                ? "일일 요청 한도 또는 크레딧 한도 초과"
                 : "요청 한도 초과 · 한도 유형을 알 수 없습니다"}
           </span>
           <div style={{ display: "flex", gap: 10 }}>
@@ -431,7 +433,7 @@ export function Composer({
           onClick={() => setAiOpen((v) => !v)}
         >
           <KeyRound size={12} />
-          {aiSettings.apiKey ? "AI 설정됨" : "AI 설정"}
+          {aiSettings.apiKey ? "ChatGPT 설정됨" : "ChatGPT 설정"}
         </button>
         <button
           type="button"
@@ -467,22 +469,50 @@ export function Composer({
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.15 }}
           >
-            <input
-              type="password"
-              value={aiSettings.apiKey}
-              onChange={(e) => setAiSettings((s) => ({ ...s, apiKey: e.target.value.trim() }))}
-              placeholder="Gemini API key"
-              aria-label="Gemini API key"
-            />
-            <select
-              value={aiSettings.model}
-              onChange={(e) => setAiSettings((s) => ({ ...s, model: e.target.value }))}
-              aria-label="AI 모델"
-            >
-              {AI_MODELS.map((m) => (
-                <option key={m.key} value={m.key}>{m.label}</option>
-              ))}
-            </select>
+            <label className="ai-panel-field">
+              <span>ChatGPT</span>
+              <input
+                type="password"
+                value={aiSettings.apiKey}
+                onChange={(e) => setAiSettings((s) => ({ ...s, apiKey: e.target.value.trim() }))}
+                placeholder="ChatGPT API key"
+                aria-label="ChatGPT API key"
+              />
+            </label>
+            <label className="ai-panel-field">
+              <span>모델</span>
+              <select
+                value={aiSettings.model}
+                onChange={(e) => setAiSettings((s) => ({ ...s, model: e.target.value }))}
+                aria-label="ChatGPT 모델"
+              >
+                {OPENAI_MODELS.map((m) => (
+                  <option key={m.key} value={m.key}>{m.label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="ai-panel-field">
+              <span>OCR Gemini</span>
+              <input
+                type="password"
+                value={ocrSettings.apiKey}
+                onChange={(e) => setOcrSettings((s) => ({ ...s, apiKey: e.target.value.trim() }))}
+                placeholder="Gemini API key"
+                aria-label="Gemini OCR API key"
+              />
+            </label>
+            <label className="ai-panel-field">
+              <span>OCR 모델</span>
+              <select
+                value={ocrSettings.model}
+                onChange={(e) => setOcrSettings((s) => ({ ...s, model: e.target.value }))}
+                aria-label="Gemini OCR 모델"
+              >
+                {OCR_MODELS.map((m) => (
+                  <option key={m.key} value={m.key}>{m.label}</option>
+                ))}
+              </select>
+            </label>
           </motion.div>
         )}
       </AnimatePresence>
