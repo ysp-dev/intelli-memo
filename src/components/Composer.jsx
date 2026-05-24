@@ -22,7 +22,7 @@ import {
   OPENAI_MODELS,
   TAGS,
 } from "../constants.js";
-import { getOcrModelFallbacks, normalizeOcrModel } from "../utils.js";
+import { copyToClipboard, getOcrModelFallbacks, normalizeOcrModel } from "../utils.js";
 import { extractTextFromImage } from "../api.js";
 import { useAutoResize } from "../hooks/useAutoResize.js";
 import { CropModal } from "./modals/CropModal.jsx";
@@ -57,6 +57,10 @@ export function Composer({
   const [copyState, setCopyState] = useState("idle");
 
   const correcting = aiStatus.state === "loading";
+  const settleCopyState = (state) => {
+    setCopyState(state);
+    setTimeout(() => setCopyState("idle"), 1500);
+  };
 
   const handleCameraClick = () => {
     if (!ocrSettings.apiKey) { setAiOpen(true); return; }
@@ -106,20 +110,22 @@ export function Composer({
     for (let i = 0; i < fallbacks.length; i++) {
       const model = fallbacks[i];
       lastModel = model;
-      setOcrSettings((s) => ({ ...s, model }));
       try {
         const extracted = await extractTextFromImage({ apiKey: ocrSettings.apiKey, model, base64, mimeType });
         if (!extracted.trim()) {
+          setOcrSettings((s) => s.model === model ? s : { ...s, model });
           setOcrState("error");
           setTimeout(() => setOcrState("idle"), 2000);
           onOcrError({ model, message: "텍스트를 찾을 수 없습니다", type: "ocr" });
           return;
         }
+        setOcrSettings((s) => s.model === model ? s : { ...s, model });
         setMemoText((prev) => prev ? `${prev}\n${extracted}` : extracted);
         setOcrState("idle");
         return;
       } catch (err) {
         if (err.status === 429 && (err.limitType ?? "unknown") === "rpd") {
+          setOcrSettings((s) => s.model === model ? s : { ...s, model });
           setOcrState("idle");
           onRateLimit("rpd", 0);
           return;
@@ -129,11 +135,13 @@ export function Composer({
     }
 
     if (lastError?.status === 429) {
+      setOcrSettings((s) => s.model === lastModel ? s : { ...s, model: lastModel });
       setOcrState("idle");
       onRateLimit(lastError.limitType ?? "unknown", lastError.retryAfter ?? 60);
       return;
     }
 
+    setOcrSettings((s) => s.model === lastModel ? s : { ...s, model: lastModel });
     const message = lastError instanceof Error ? lastError.message : "OCR 실패";
     setOcrState("error");
     setTimeout(() => setOcrState("idle"), 2000);
@@ -164,11 +172,10 @@ export function Composer({
     const text = activeView === "memos" ? memoText : actionText;
     if (!text.trim()) return;
     try {
-      await navigator.clipboard.writeText(text);
-      setCopyState("done");
-      setTimeout(() => setCopyState("idle"), 1500);
+      await copyToClipboard(text);
+      settleCopyState("done");
     } catch {
-      setCopyState("idle");
+      settleCopyState("error");
     }
   };
 
@@ -244,12 +251,12 @@ export function Composer({
                   {hasText && (
                     <button
                       type="button"
-                      className={`icon-btn btn-copy${copyState === "done" ? " copied" : ""}`}
+                      className={`icon-btn btn-copy${copyState === "done" ? " copied" : ""}${copyState === "error" ? " error" : ""}`}
                       onClick={copyDraft}
-                      aria-label="복사"
-                      title="텍스트 복사"
+                      aria-label={copyState === "error" ? "복사 실패" : copyState === "done" ? "복사됨" : "복사"}
+                      title={copyState === "error" ? "복사 실패" : "텍스트 복사"}
                     >
-                      {copyState === "done" ? <Check size={15} /> : <Copy size={15} />}
+                      {copyState === "done" ? <Check size={15} /> : copyState === "error" ? <X size={15} /> : <Copy size={15} />}
                     </button>
                   )}
                   <button
@@ -363,6 +370,17 @@ export function Composer({
                       aria-label="지우기"
                     >
                       <X size={15} />
+                    </button>
+                  )}
+                  {hasText && (
+                    <button
+                      type="button"
+                      className={`icon-btn btn-copy${copyState === "done" ? " copied" : ""}${copyState === "error" ? " error" : ""}`}
+                      onClick={copyDraft}
+                      aria-label={copyState === "error" ? "복사 실패" : copyState === "done" ? "복사됨" : "복사"}
+                      title={copyState === "error" ? "복사 실패" : "텍스트 복사"}
+                    >
+                      {copyState === "done" ? <Check size={15} /> : copyState === "error" ? <X size={15} /> : <Copy size={15} />}
                     </button>
                   )}
                   <button

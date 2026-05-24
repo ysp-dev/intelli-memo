@@ -89,6 +89,7 @@ export const copyToClipboard = async (text) => {
 
 const getFallbacks = (models, model) => {
   const keys = models.map((m) => m.key);
+  // Fallback starts at the selected model; selecting the last model intentionally disables downgrade.
   return keys.slice(Math.max(0, keys.indexOf(model)));
 };
 

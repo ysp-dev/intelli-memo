@@ -578,6 +578,7 @@ textarea { resize: none; }
 }
 .btn-copy:hover { background: rgba(0,0,0,0.08); color: var(--t1); }
 .btn-copy.copied { color: var(--accent); }
+.btn-copy.error { color: var(--red); background: var(--red-bg); }
 
 .btn-camera, .btn-gallery {
   color: var(--t2); background: var(--raised);

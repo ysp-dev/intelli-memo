@@ -56,13 +56,13 @@ export function useAiCorrection({ memoText, actionText, setMemoText, setActionTe
     clearTimeout(idleTimerRef.current);
     setAiError(null);
     const fallbacks = getOpenAiModelFallbacks(normalizeOpenAiModel(aiSettings.model));
+    const rateLimitMessage = fallbacks.length > 1 ? "요청 한도 초과" : "대체 모델 없음 · 요청 한도 초과";
     let lastError = null;
     let lastModel = fallbacks.at(-1) ?? DEFAULT_OPENAI_MODEL;
 
     for (let i = 0; i < fallbacks.length; i++) {
       const model = fallbacks[i];
       lastModel = model;
-      setAiSettings((s) => ({ ...s, model }));
       setAiStatus({
         state: "loading",
         message: i === 0 ? `${modeConfig.label} 중…` : `${model} 재시도 중…`,
@@ -70,6 +70,7 @@ export function useAiCorrection({ memoText, actionText, setMemoText, setActionTe
 
       try {
         const corrected = await correctKorean({ apiKey: aiSettings.apiKey, model, text, mode });
+        setAiSettings((s) => s.model === model ? s : { ...s, model });
         if (modeConfig.modal && type === "memos") {
           setPendingCorrection({ original: text, corrected, mode: modeConfig.key });
           setAiStatus({ state: "success", message: `${modeConfig.label} 제안 준비됨 ✓` });
@@ -82,8 +83,9 @@ export function useAiCorrection({ memoText, actionText, setMemoText, setActionTe
         return;
       } catch (err) {
         if (err.status === 429 && (err.limitType ?? "unknown") === "rpd") {
+          setAiSettings((s) => s.model === model ? s : { ...s, model });
           setRateLimitInfo({ type: "rpd" });
-          setAiStatus({ state: "rate-limited", message: "요청 한도 초과" });
+          setAiStatus({ state: "rate-limited", message: rateLimitMessage });
           return;
         }
         lastError = err;
@@ -91,16 +93,18 @@ export function useAiCorrection({ memoText, actionText, setMemoText, setActionTe
     }
 
     if (lastError?.status === 429) {
+      setAiSettings((s) => s.model === lastModel ? s : { ...s, model: lastModel });
       const limitType = lastError.limitType ?? "unknown";
       if (limitType === "rpm") {
         setRateLimitInfo({ type: "rpm", until: Date.now() + (lastError.retryAfter ?? 60) * 1000 });
       } else {
         setRateLimitInfo({ type: limitType });
       }
-      setAiStatus({ state: "rate-limited", message: "요청 한도 초과" });
+      setAiStatus({ state: "rate-limited", message: rateLimitMessage });
       return;
     }
 
+    setAiSettings((s) => s.model === lastModel ? s : { ...s, model: lastModel });
     openSettings();
     const message = lastError instanceof Error ? lastError.message : "교정 실패";
     setAiStatus({ state: "error", message });
